@@ -6,12 +6,17 @@ use Bolt\Config;
 use Bolt\Exception\AccessControlException;
 use Bolt\Helpers\Input;
 use Bolt\Logger\FlashLoggerInterface;
+use Bolt\Storage\Collection;
 use Bolt\Storage\Entity;
 use Bolt\Storage\EntityManager;
 use Bolt\Translation\Translator as Trans;
 use Bolt\Users;
 use Carbon\Carbon;
+use Cocur\Slugify\Slugify;
+use Cocur\Slugify\SlugifyInterface;
 use Psr\Log\LoggerInterface;
+use RecursiveArrayIterator;
+use RecursiveIteratorIterator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Response;
@@ -20,7 +25,7 @@ use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 /**
  * Helper class for ContentType record editor saves.
  *
- * Prior to v2.3 this functionality existed in \Bolt\Controllers\Backend::editcontent().
+ * Prior to v3.0 this functionality existed in \Bolt\Controllers\Backend::editcontent().
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
@@ -40,6 +45,8 @@ class Save
     protected $loggerFlash;
     /** @var UrlGeneratorInterface */
     protected $urlGenerator;
+    /** @var SlugifyInterface */
+    private $slugify;
 
     /**
      * Constructor function.
@@ -51,6 +58,7 @@ class Save
      * @param LoggerInterface       $loggerSystem
      * @param FlashLoggerInterface  $loggerFlash
      * @param UrlGeneratorInterface $urlGenerator
+     * @param SlugifyInterface      $slugify
      */
     public function __construct(
         EntityManager $em,
@@ -59,7 +67,8 @@ class Save
         LoggerInterface $loggerChange,
         LoggerInterface $loggerSystem,
         FlashLoggerInterface $loggerFlash,
-        UrlGeneratorInterface $urlGenerator
+        UrlGeneratorInterface $urlGenerator,
+        SlugifyInterface $slugify = null
     ) {
         $this->em = $em;
         $this->config = $config;
@@ -68,23 +77,26 @@ class Save
         $this->loggerSystem = $loggerSystem;
         $this->loggerFlash = $loggerFlash;
         $this->urlGenerator = $urlGenerator;
+        $this->slugify = $slugify;
     }
 
     /**
      * Do the save for a POSTed record.
      *
-     * @param array   $formValues
-     * @param array   $contenttype  The contenttype data
-     * @param integer $id           The record ID
-     * @param boolean $new          If TRUE this is a new record
-     * @param string  $returnTo
-     * @param string  $editReferrer
+     * @param array  $formValues
+     * @param array  $contentType  The ContentType data
+     * @param int    $id           The record ID
+     * @param bool   $new          If TRUE this is a new record
+     * @param string $returnTo
+     * @param string $editReferrer
+     *
+     * @throws AccessControlException
      *
      * @return Response
      */
-    public function action(array $formValues, array $contenttype, $id, $new, $returnTo, $editReferrer)
+    public function action(array $formValues, array $contentType, $id, $new, $returnTo, $editReferrer)
     {
-        $contentTypeSlug = $contenttype['slug'];
+        $contentTypeSlug = $contentType['slug'];
         $repo = $this->em->getRepository($contentTypeSlug);
 
         // If we have an ID now, this is an existing record
@@ -93,13 +105,13 @@ class Save
             $oldContent = clone $content;
             $oldStatus = $content['status'];
         } else {
-            $content = $repo->create(['contenttype' => $contentTypeSlug, 'status' => $contenttype['default_status']]);
+            $content = $repo->create(['contenttype' => $contentTypeSlug, 'status' => $contentType['default_status']]);
             $oldContent = null;
             $oldStatus = 'draft';
         }
 
         // Don't allow spoofing the ID.
-        if ($content->getId() !== null && (integer) $id !== $content->getId()) {
+        if ($content->getId() !== null && (int) $id !== $content->getId()) {
             if ($returnTo === 'ajax') {
                 throw new AccessControlException("Don't try to spoof the id!");
             }
@@ -108,14 +120,14 @@ class Save
             return new RedirectResponse($this->generateUrl('dashboard'));
         }
 
-        $this->setPostedValues($content, $formValues, $contenttype);
+        $this->setPostedValues($content, $formValues, $contentType);
         $this->setTransitionStatus($content, $contentTypeSlug, $id, $oldStatus);
 
         // Get the associated record change comment
         $comment = isset($formValues['changelog-comment']) ? $formValues['changelog-comment'] : '';
 
         // Save the record
-        return $this->saveContentRecord($content, $oldContent, $contenttype, $new, $comment, $returnTo, $editReferrer);
+        return $this->saveContentRecord($content, $oldContent, $contentType, $new, $comment, $returnTo, $editReferrer);
     }
 
     /**
@@ -124,12 +136,12 @@ class Save
      * We act as if a status *transition* were requested and fallback to the old
      * status otherwise.
      *
-     * @param Entity\Entity $content
-     * @param string        $contentTypeSlug
-     * @param integer       $id
-     * @param string        $oldStatus
+     * @param Entity\Content $content
+     * @param string         $contentTypeSlug
+     * @param int            $id
+     * @param string         $oldStatus
      */
-    private function setTransitionStatus(Entity\Entity $content, $contentTypeSlug, $id, $oldStatus)
+    private function setTransitionStatus(Entity\Content $content, $contentTypeSlug, $id, $oldStatus)
     {
         $canTransition = $this->users->isContentStatusTransitionAllowed($oldStatus, $content->getStatus(), $contentTypeSlug, $id);
         if (!$canTransition) {
@@ -138,7 +150,7 @@ class Save
     }
 
     /**
-     * Set a Contenttype record values from a HTTP POST.
+     * Set a ContentType record values from a HTTP POST.
      *
      * @param Entity\Content $content
      * @param array          $formValues
@@ -156,7 +168,7 @@ class Save
         $user = $this->users->getCurrentUser();
         if ($id = $content->getId()) {
             // Owner is set explicitly, is current user is allowed to do this?
-            if (isset($formValues['ownerid']) && (integer) $formValues['ownerid'] !== $content->getOwnerid()) {
+            if (isset($formValues['ownerid']) && (int) $formValues['ownerid'] !== $content->getOwnerid()) {
                 if (!$this->users->isAllowed("contenttype:{$contentType['slug']}:change-ownership:$id")) {
                     throw new AccessControlException('Changing ownership is not allowed.');
                 }
@@ -166,6 +178,8 @@ class Save
             $content->setOwnerid($user['id']);
         }
 
+        // Hack … remove soon
+        $formValues += ['status' => 'draft'];
         // Make sure we have a proper status.
         if (!in_array($formValues['status'], ['published', 'timed', 'held', 'draft'])) {
             if ($status = $content->getStatus()) {
@@ -177,14 +191,26 @@ class Save
 
         // Set the object values appropriately
         foreach ($formValues as $name => $value) {
-            if ($name === 'relation') {
-                $this->setPostedRelations($content, $formValues);
-            } elseif ($name === 'taxonomy') {
-                $this->setPostedTaxonomies($content, $formValues);
-            } else {
-                $content->set($name, empty($value) ? null : $value);
+            if ($name === 'relation' || $name === 'taxonomy') {
+                continue;
             }
+            $content->set($name, (empty($value) || $this->isEmptyArray($value)) ? null : $value);
         }
+        foreach ($contentType['fields'] as $fieldName => $data) {
+            if ($data['type'] !== 'slug' || !isset($formValues[$fieldName])) {
+                continue;
+            }
+            if ($this->slugify !== null) {
+                $snail = $this->slugify->slugify($formValues[$fieldName]);
+            } else {
+                // @deprecated Required for BC overrides
+                $snail = Slugify::create()->slugify($formValues[$fieldName]);
+            }
+            $content->set($fieldName, $snail);
+        }
+
+        $this->setPostedRelations($content, $formValues);
+        $this->setPostedTaxonomies($content, $formValues);
     }
 
     /**
@@ -196,11 +222,8 @@ class Save
      */
     private function setPostedRelations(Entity\Content $content, $formValues)
     {
-        if (!isset($formValues['relation'])) {
-            return;
-        }
-
-        $related = $this->em->createCollection('Bolt\Storage\Entity\Relations');
+        /** @var Collection\Relations $related */
+        $related = $this->em->createCollection(Entity\Relations::class);
         $related->setFromPost($formValues, $content);
         $content->setRelation($related);
     }
@@ -213,11 +236,8 @@ class Save
      */
     private function setPostedTaxonomies(Entity\Content $content, $formValues)
     {
-        if (!isset($formValues['taxonomy'])) {
-            return;
-        }
-
-        $taxonomies = $this->em->createCollection('Bolt\Storage\Entity\Taxonomy');
+        /** @var Collection\Taxonomy $taxonomies */
+        $taxonomies = $this->em->createCollection(Entity\Taxonomy::class);
         $taxonomies->setFromPost($formValues, $content);
         $content->setTaxonomy($taxonomies);
     }
@@ -228,17 +248,21 @@ class Save
      * @param Entity\Content      $content
      * @param Entity\Content|null $oldContent
      * @param array               $contentType
-     * @param boolean             $new
+     * @param bool                $new
      * @param string              $comment
      * @param string              $returnTo
      * @param string              $editReferrer
      *
-     * @return Response
+     * @return Response|null
      */
     private function saveContentRecord(Entity\Content $content, $oldContent, array $contentType, $new, $comment, $returnTo, $editReferrer)
     {
         // Save the record
         $repo = $this->em->getRepository($contentType['slug']);
+
+        // Update the date modified timestamp
+        $content->setDatechanged('now');
+
         $repo->save($content);
         $id = $content->getId();
 
@@ -247,53 +271,49 @@ class Save
 
         // Log the change
         if ($new) {
-            $this->loggerFlash->success(Trans::__('contenttypes.generic.saved-new', ['%contenttype%' => $contentType['slug']]));
+            $this->loggerFlash->success(Trans::__('contenttypes.generic.saved-new', ['%contenttype%' => $contentType['singular_name']]));
             $this->loggerSystem->info('Created: ' . $content->getTitle(), ['event' => 'content']);
+            $redirectUri = $this->generateUrl(
+                'editcontent',
+                [
+                    'contenttypeslug' => $contentType['slug'],
+                    'id'              => $id,
+                ]
+            );
+
+            return new RedirectResponse($redirectUri);
         } else {
-            $this->loggerFlash->success(Trans::__('contenttypes.generic.saved-changes', ['%contenttype%' => $contentType['slug']]));
+            $this->loggerFlash->success(Trans::__('contenttypes.generic.saved-changes', ['%contenttype%' => $contentType['singular_name']]));
             $this->loggerSystem->info('Saved: ' . $content->getTitle(), ['event' => 'content']);
         }
 
-        /*
-         * We now only get a returnto parameter if we are saving a new
-         * record and staying on the same page, i.e. "Save {contenttype}"
-         */
         if ($returnTo) {
-            if ($returnTo === 'new') {
-                return new RedirectResponse(
-                    $this->generateUrl(
-                        'editcontent',
-                        [
-                            'contenttypeslug' => $contentType['slug'],
-                            'id'              => $id,
-                            '#'               => $returnTo,
-                        ]
-                    )
-                );
-            } elseif ($returnTo === 'saveandnew') {
-                return new RedirectResponse(
-                    $this->generateUrl(
-                        'editcontent',
-                        [
-                            'contenttypeslug' => $contentType['slug'],
-                            '#'               => $returnTo,
-                        ]
-                    )
-                );
-            } elseif ($returnTo === 'ajax') {
+            if ($returnTo === 'ajax') {
                 return $this->createJsonUpdate($content, true);
+            } elseif ($returnTo === 'save_create') {
+                return new RedirectResponse(
+                    $this->generateUrl(
+                        'editcontent',
+                        [
+                            'contenttypeslug' => $contentType['slug'],
+                            '_fragment'       => $returnTo,
+                        ]
+                    )
+                );
+            } elseif ($returnTo === 'save_return') {
+                // No returnto, so we go back to the 'overview' for this contenttype.
+                // check if a pager was set in the referrer - if yes go back there
+                if ($editReferrer) {
+                    return new RedirectResponse($editReferrer);
+                }
+
+                return new RedirectResponse($this->generateUrl('overview', ['contenttypeslug' => $contentType['slug']]));
             } elseif ($returnTo === 'test') {
                 return $this->createJsonUpdate($content, false);
             }
         }
 
-        // No returnto, so we go back to the 'overview' for this contenttype.
-        // check if a pager was set in the referrer - if yes go back there
-        if ($editReferrer) {
-            return new RedirectResponse($editReferrer);
-        } else {
-            return new RedirectResponse($this->generateUrl('overview', ['contenttypeslug' => $contentType['slug']]));
-        }
+        return null;
     }
 
     /**
@@ -319,6 +339,8 @@ class Save
                     $formValues[$key] = [];
                 } elseif ($values['type'] === 'checkbox') {
                     $formValues[$key] = 0;
+                } elseif ($values['type'] === 'repeater' || $values['type'] === 'block') {
+                    $formValues[$key] = [];
                 }
             }
         }
@@ -331,7 +353,7 @@ class Save
      * save events.
      *
      * @param Entity\Content $content
-     * @param boolean        $flush
+     * @param bool           $flush
      *
      * @return JsonResponse
      */
@@ -352,7 +374,9 @@ class Save
 
         $val = $content->toArray();
 
-        if (isset($val['datechanged'])) {
+        if ($val['datechanged'] instanceof Carbon) {
+            $val['datechanged'] = $val['datechanged']->toIso8601String();
+        } elseif (isset($val['datechanged'])) {
             $val['datechanged'] = (new Carbon($val['datechanged']))->toIso8601String();
         }
 
@@ -375,7 +399,7 @@ class Save
      * Add a change log entry to track the change.
      *
      * @param string              $contentType
-     * @param integer             $contentId
+     * @param int                 $contentId
      * @param Entity\Content      $newContent
      * @param Entity\Content|null $oldContent
      * @param string|null         $comment
@@ -398,11 +422,11 @@ class Save
     }
 
     /**
-     * Shortcut for {@see UrlGeneratorInterface::generate}
+     * Shortcut for {@see UrlGeneratorInterface::generate}.
      *
      * @param string $name          The name of the route
      * @param array  $params        An array of parameters
-     * @param bool   $referenceType The type of reference to be generated (one of the constants)
+     * @param int    $referenceType The type of reference to be generated (one of the constants)
      *
      * @return string
      */
@@ -412,5 +436,28 @@ class Save
         $generator = $this->urlGenerator;
 
         return $generator->generate($name, $params, $referenceType);
+    }
+
+    /**
+     * Check wether an array is empty and if it is the value of the repeater is set to null.
+     *
+     * @param array $input
+     *
+     * @return bool
+     */
+    private function isEmptyArray($input)
+    {
+        if (!is_array($input)) {
+            return false;
+        }
+        $empty = true;
+        foreach (new RecursiveIteratorIterator(new RecursiveArrayIterator($input), RecursiveIteratorIterator::LEAVES_ONLY) as $key => $value) {
+            $empty = (empty($value) && $value !== '0' && $value !== 0);
+            if (!$empty) {
+                return false;
+            }
+        }
+
+        return $empty;
     }
 }

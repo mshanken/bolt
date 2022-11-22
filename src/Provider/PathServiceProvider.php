@@ -2,24 +2,37 @@
 
 namespace Bolt\Provider;
 
-use Eloquent\Pathogen\FileSystem\Factory\PlatformFileSystemPathFactory;
+use Bolt\Configuration\PathResolver;
+use Pimple\Container;
+use Pimple\ServiceProviderInterface;
+use Silex\Api\BootableProviderInterface;
 use Silex\Application;
-use Silex\ServiceProviderInterface;
 
-class PathServiceProvider implements ServiceProviderInterface
+class PathServiceProvider implements ServiceProviderInterface, BootableProviderInterface
 {
-    public function register(Application $app)
+    public function register(Container $app)
     {
-        $app['pathmanager'] = $app->share(
-            function () {
-                $filesystempath = new PlatformFileSystemPathFactory();
+        $app['path_resolver'] = function ($app) {
+            $resolver = new PathResolver($app['path_resolver.root'], PathResolver::defaultPaths());
 
-                return $filesystempath;
+            foreach ($app['path_resolver.paths'] as $name => $path) {
+                $resolver->define($name, $path);
             }
-        );
+
+            // Bolt's project directory. Not configurable.
+            $resolver->define('bolt', __DIR__ . '/../../');
+
+            return $resolver;
+        };
+        $app['path_resolver.root'] = '';
+        $app['path_resolver.paths'] = [];
     }
 
     public function boot(Application $app)
     {
+        $resolver = $app['path_resolver'];
+
+        $theme = $app['config']->get('general/theme');
+        $resolver->define('theme', "%themes%/$theme");
     }
 }

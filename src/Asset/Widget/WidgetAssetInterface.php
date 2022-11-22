@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Asset\Widget;
 
 use Bolt\Asset\AssetInterface;
@@ -25,38 +26,6 @@ interface WidgetAssetInterface extends AssetInterface, \ArrayAccess
      * @return WidgetAssetInterface
      */
     public function setKey();
-
-    /**
-     * Get the widget's zone / type, either 'frontend' or 'backend'
-     *
-     * @return string|null
-     */
-    public function getZone();
-
-    /**
-     * Set the widget zone / type, either 'frontend' or 'backend'.
-     *
-     * @param string $zone
-     *
-     * @return WidgetAssetInterface
-     */
-    public function setZone($zone);
-
-    /**
-     * Get the widget's target location.
-     *
-     * @return string|null
-     */
-    public function getLocation();
-
-    /**
-     * Target locational element.
-     *
-     * @param string $location
-     *
-     * @return WidgetAssetInterface
-     */
-    public function setLocation($location);
 
     /**
      * Get the optional content provider callback function.
@@ -157,14 +126,14 @@ interface WidgetAssetInterface extends AssetInterface, \ArrayAccess
     /**
      * Check if the widget is set to be lazy loaded.
      *
-     * @return boolean
+     * @return bool
      */
     public function isDeferred();
 
     /**
      * Set/unset the lazy loading flag fo the widget content.
      *
-     * @param boolean $defer
+     * @param bool $defer
      *
      * @return WidgetAssetInterface
      */
@@ -173,14 +142,14 @@ interface WidgetAssetInterface extends AssetInterface, \ArrayAccess
     /**
      * Get the widget's render priroity in the target position.
      *
-     * @return integer
+     * @return int
      */
     public function getPriority();
 
     /**
      * Set the widget's render priroity in the target position.
      *
-     * @param integer $priority
+     * @param int $priority
      *
      * @return WidgetAssetInterface
      */
@@ -189,14 +158,14 @@ interface WidgetAssetInterface extends AssetInterface, \ArrayAccess
     /**
      * Get the number of seconds to cache the widgets content.
      *
-     * @return integer
+     * @return int
      */
     public function getCacheDuration();
 
     /**
      * Set the number of seconds to cache the widgets content.
      *
-     * @param integer $cacheDuration
+     * @param int $cacheDuration
      *
      * @return WidgetAssetInterface
      */

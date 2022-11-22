@@ -1,71 +1,43 @@
 <?php
+
 namespace Bolt;
 
-use Bolt\Exception\LowlevelException;
+use Bolt\Exception\BootException;
 
 /**
- * Second stage loader. Here we bootstrap the app:
+ * Second stage loader. Do bootstrapping within a new local scope to avoid
+ * polluting the global space.
  *
+ * Here we bootstrap the app:
  * - Initialize mb functions for UTF-8
- * - Figure out path structure
+ * - Figure out root path
  * - Bring in the autoloader
- * - Load and verify configuration
- * - Initialize the application
+ * - Call Bolt\Bootstrap to create the application
+ *
+ * @throws BootException
+ *
+ * @return \Silex\Application
  */
+return call_user_func(function () {
+    // Resolve Bolt-root
+    $boltRootPath = realpath(__DIR__ . '/..');
 
-// Do bootstrapping within a new local scope to avoid polluting the global
-return call_user_func(
-    function () {
-        // Use UTF-8 for all multi-byte functions
-        mb_internal_encoding('UTF-8');
-        mb_http_output('UTF-8');
+    // Look for the autoloader in known positions relative to Bolt's root
+    $autodetectionMappings = [
+        $boltRootPath . '/vendor/autoload.php' => $boltRootPath,
+        $boltRootPath . '/../../autoload.php'  => $boltRootPath . '/../../..',
+    ];
 
-        // Resolve Bolt-root
-        $boltRootPath = realpath(__DIR__ . '/..');
-
-        // Look for the autoloader in known positions relative to the Bolt-root,
-        // and autodetect an appropriate configuration class based on this
-        // information. (autoload.php path maps to a configuration class)
-        $autodetectionMappings = [
-            $boltRootPath . '/vendor/autoload.php' => 'Standard',
-            $boltRootPath . '/../../autoload.php' => 'Composer'
-        ];
-
-        foreach ($autodetectionMappings as $autoloadPath => $configType) {
-            if (file_exists($autoloadPath)) {
-                $loader = require $autoloadPath;
-                // Register a PHP shutdown function to catch early fatal errors
-                register_shutdown_function(['\Bolt\Exception\LowlevelException', 'catchFatalErrorsEarly']);
-                // Instantiate the configuration class
-                $configClass = '\\Bolt\\Configuration\\' . $configType;
-                $config = new $configClass($loader);
-                break;
-            }
+    foreach ($autodetectionMappings as $autoloadPath => $rootPath) {
+        if (!file_exists($autoloadPath)) {
+            continue;
         }
 
-        // None of the mappings matched, error
-        if (!isset($config)) {
-            include $boltRootPath . '/src/Exception/LowlevelException.php';
-            throw new LowlevelException(
-                "Configuration autodetection failed because The file " .
-                "<code>vendor/autoload.php</code> doesn't exist. Make sure " .
-                "you've installed the required components with Composer."
-            );
-        }
+        require_once $autoloadPath;
 
-        /** @var \Bolt\Configuration\ResourceManager $config */
-        $config->verify();
-        $config->compat();
-
-        // Create the 'Bolt application'
-        $app = new Application(['resources' => $config]);
-
-        // Register a PHP shutdown function to catch fatal errors with the application object
-        register_shutdown_function(['\Bolt\Exception\LowlevelException', 'catchFatalErrors'], $app);
-
-        // Initialize the 'Bolt application': Set up all routes, providers, database, templating, etc..
-        $app->initialize();
-
-        return $app;
+        return Bootstrap::run($rootPath);
     }
-);
+
+    require_once $boltRootPath . '/src/Exception/BootException.php';
+    throw BootException::earlyExceptionComposer();
+});

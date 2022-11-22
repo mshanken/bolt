@@ -2,6 +2,7 @@
 
 namespace Bolt\Storage\Entity;
 
+use Bolt\Storage\Field\Type\FieldTypeInterface;
 use Bolt\Storage\FieldManager;
 use Bolt\Storage\Mapping\ClassMetadata;
 use Bolt\Storage\Mapping\MetadataDriver;
@@ -16,7 +17,7 @@ class Builder
      *
      * @var string
      */
-    protected $class = 'Bolt\Storage\Entity\Content';
+    protected $class = Content::class;
     protected $classMetadata;
 
     protected $metadata;
@@ -96,7 +97,7 @@ class Builder
             $entity = new $class();
         }
 
-        if (!$entity->getContenttype() && $ct = $this->getClassMetadata()->getBoltName()) {
+        if ($entity instanceof Content && !$entity->getContenttype() && $ct = $this->getClassMetadata()->getBoltName()) {
             $entity->setContenttype($ct);
         }
 
@@ -117,7 +118,7 @@ class Builder
     /**
      * Creates a new entity object.
      *
-     * @param array|object $data   Data to load into the entity.
+     * @param array|object $data   data to load into the entity
      * @param object|null  $entity
      *
      * @return object $entity
@@ -136,9 +137,12 @@ class Builder
             $handler = isset($this->transformers[$mappedType]) ? $this->transformers[$mappedType] : null;
 
             if ($handler) {
-                call_user_func_array($handler, [$entity, $data[$key]]);
+                call_user_func($handler, $entity, $data[$key]);
             } else {
-                call_user_func_array([$fieldType, 'set'], [$entity, $data[$key]]);
+                $val = isset($data[$key]) ? $data[$key] : null;
+                if ($fieldType instanceof FieldTypeInterface) {
+                    call_user_func([$fieldType, 'set'], $entity, $val);
+                }
             }
         }
 
@@ -161,7 +165,9 @@ class Builder
         // set fields
         foreach ((array) $fields as $key => $mapping) {
             $fieldType = $this->fieldManager->get($mapping['fieldtype'], $mapping);
-            call_user_func_array([$fieldType, 'hydrate'], [$data, $entity]);
+            if ($fieldType instanceof FieldTypeInterface) {
+                call_user_func([$fieldType, 'hydrate'], $data, $entity);
+            }
         }
 
         return $entity;
@@ -181,8 +187,50 @@ class Builder
             $getter = 'get' . ucfirst($key);
             $value = $entity->$getter();
             if ($value) {
-                call_user_func_array([$fieldType, 'set'], [$entity, $value]);
+                call_user_func([$fieldType, 'set'], $entity, $value);
             }
         }
+    }
+
+    /**
+     * @param mixed       $value
+     * @param string      $field
+     * @param string|null $subField
+     * @param string|null $block
+     *
+     * @return FieldValue|bool
+     */
+    public function getHydratedValue($value, $field, $subField = null, $block = null)
+    {
+        $fields = $this->getFields();
+
+        foreach ($fields as $key => $mapping) {
+            if ($key !== $field) {
+                continue;
+            }
+            $fieldType = $this->fieldManager->get($mapping['fieldtype'], $mapping);
+
+            if ($subField !== null) {
+                $subMapping = isset($mapping['data']['fields'][$subField]) ? $mapping['data']['fields'][$subField] : null;
+                if ($subMapping === null) {
+                    continue;
+                }
+                $fieldType = $this->fieldManager->get($subMapping['fieldtype'], $subMapping);
+                $field = $subField;
+            }
+
+            if ($block !== null) {
+                $subMapping = $mapping['data']['fields'][$block]['fields'][$subField];
+                $fieldType = $this->fieldManager->get($subMapping['fieldtype'], $subMapping);
+                $field = $subField;
+            }
+
+            $tmpentity = new FieldValue();
+            $fieldType->hydrate([$field => $value], $tmpentity);
+
+            return $tmpentity[$field];
+        }
+
+        return false;
     }
 }

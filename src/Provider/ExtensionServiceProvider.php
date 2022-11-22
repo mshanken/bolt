@@ -4,126 +4,121 @@ namespace Bolt\Provider;
 
 use Bolt\Composer\Action;
 use Bolt\Composer\EventListener\BufferIOListener;
+use Bolt\Composer\JsonManager;
 use Bolt\Composer\PackageManager;
-use Bolt\Extensions;
-use Bolt\Extensions\ExtensionsInfoService;
-use Bolt\Extensions\StatService;
+use Bolt\Composer\Satis;
+use Bolt\Extension\Manager;
+use Composer\IO\BufferIO;
+use Pimple\Container;
+use Pimple\ServiceProviderInterface;
+use Silex\Api\BootableProviderInterface;
+use Silex\Api\EventListenerProviderInterface;
 use Silex\Application;
-use Silex\ServiceProviderInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 
-class ExtensionServiceProvider implements ServiceProviderInterface
+/**
+ * 1st phase: Registers our services.
+ * 2nd phase: Registers extensions on subscribe()
+ * 3rd phase: Boots extensions on boot()
+ */
+class ExtensionServiceProvider implements ServiceProviderInterface, BootableProviderInterface, EventListenerProviderInterface
 {
-    public function register(Application $app)
+    public function register(Container $app)
     {
-        $app['extensions'] = $app->share(
-            function ($app) {
-                $extensions = new Extensions($app);
+        $app['extensions'] = function ($app) {
+            $loader = new Manager(
+                $app['filesystem']->getFilesystem('extensions'),
+                $app['filesystem']->getFilesystem('web'),
+                $app['logger.flash'],
+                $app['config']
+            );
+            $loader->addManagedExtensions();
 
-                return $extensions;
-            }
-        );
+            return $loader;
+        };
 
-        $app['extensions.stats'] = $app->share(
-            function ($app) {
-                $stats = new StatService($app);
+        $app['extensions.stats'] = function ($app) {
+            $stats = new Satis\StatService($app['guzzle.client'], $app['logger.system'], $app['extend.site']);
 
-                return $stats;
-            }
-        );
+            return $stats;
+        };
 
-        $app['extend.site'] = $app['config']->get('general/extensions/site', 'https://extensions.bolt.cm/');
-        $app['extend.repo'] = $app['extend.site'] . 'list.json';
+        $app['extend.site'] = function ($app) {
+            return $app['config']->get('general/extensions/site', 'https://market.bolt.cm/');
+        };
+        $app['extend.repo'] = function ($app) {
+            return $app['extend.site'] . 'list.json';
+        };
         $app['extend.urls'] = [
             'list' => 'list.json',
             'info' => 'info.json',
         ];
 
         $app['extend.online'] = false;
-        $app['extend.enabled'] = $app['config']->get('general/extensions/enabled', true);
-        $app['extend.writeable'] = $app->share(
-            function () use ($app) {
-                $extensionsPath = $app['resources']->getPath('extensions');
+        $app['extend.enabled'] = function ($app) {
+            return $app['config']->get('general/extensions/enabled', true);
+        };
+        $app['extend.writeable'] = function () use ($app) {
+            $extensionsPath = $app['path_resolver']->resolve('extensions');
 
-                return is_dir($extensionsPath) && is_writable($extensionsPath) ? true : false;
-            }
-        );
+            return is_dir($extensionsPath) && is_writable($extensionsPath);
+        };
 
-        $app['extend.manager'] = $app->share(
-            function ($app) {
-                return new PackageManager($app);
-            }
-        );
+        $app['extend.manager'] = function ($app) {
+            return new PackageManager($app);
+        };
 
-        $app['extend.listener'] = $app->share(
-            function ($app) {
-                return new BufferIOListener($app['extend.manager']);
-            }
-        );
+        $app['extend.manager.json'] = function ($app) {
+            return new JsonManager($app);
+        };
 
-        $app['extend.info'] = $app->share(
-            function ($app) {
-                return new ExtensionsInfoService($app['guzzle.client'], $app['extend.site'], $app['extend.urls']);
-            }
-        );
+        $app['extend.listener'] = function ($app) {
+            return new BufferIOListener($app['extend.manager'], $app['logger.system']);
+        };
+
+        $app['extend.info'] = function ($app) {
+            return new Satis\QueryService($app['guzzle.client'], $app['extend.site'], $app['extend.urls']);
+        };
 
         // Actions
-        $app['extend.action'] = $app->share(
-            function (Application $app) {
-                return new \Pimple(
-                    [
-                        // @codingStandardsIgnoreStart
-                        'autoload' => $app->share(function () use ($app) { return new Action\DumpAutoload($app); }),
-                        'check'    => $app->share(function () use ($app) { return new Action\CheckPackage($app); }),
-                        'install'  => $app->share(function () use ($app) { return new Action\InstallPackage($app); }),
-                        'json'     => $app->share(function () use ($app) { return new Action\BoltExtendJson($app); }),
-                        'remove'   => $app->share(function () use ($app) { return new Action\RemovePackage($app); }),
-                        'require'  => $app->share(function () use ($app) { return new Action\RequirePackage($app); }),
-                        'search'   => $app->share(function () use ($app) { return new Action\SearchPackage($app); }),
-                        'show'     => $app->share(function () use ($app) { return new Action\ShowPackage($app); }),
-                        'update'   => $app->share(function () use ($app) { return new Action\UpdatePackage($app); }),
-                        // @codingStandardsIgnoreEnd
-                    ]
-                );
-            }
-        );
+        $app['extend.action'] = function (Application $app) {
+            return new Container(
+                [
+                    // @codingStandardsIgnoreStart
+                    'autoload'  => function () use ($app) { return new Action\DumpAutoload($app); },
+                    'check'     => function () use ($app) { return new Action\CheckPackage($app); },
+                    'depends'   => function () use ($app) { return new Action\DependsPackage($app); },
+                    'install'   => function () use ($app) { return new Action\InstallPackage($app); },
+                    'prohibits' => function () use ($app) { return new Action\ProhibitsPackage($app); },
+                    'remove'    => function () use ($app) { return new Action\RemovePackage($app); },
+                    'require'   => function () use ($app) { return new Action\RequirePackage($app); },
+                    'search'    => function () use ($app) { return new Action\SearchPackage($app); },
+                    'show'      => function () use ($app) { return new Action\ShowPackage($app); },
+                    'update'    => function () use ($app) { return new Action\UpdatePackage($app); },
+                    // @codingStandardsIgnoreEnd
+                ]
+            );
+        };
 
-        $app['extend.action.options'] = $app->share(
-            function ($app) {
-                return [
-                    'basedir'                => $app['resources']->getPath('extensions'),
-                    'composerjson'           => $app['resources']->getPath('extensions/composer.json'),
+        $app['extend.action.io'] = function () {
+            return new BufferIO();
+        };
 
-                    'dryrun'                 => null,  // dry-run              - Outputs the operations but will not execute anything (implicitly enables --verbose)
-                    'verbose'                => true,  // verbose              - Shows more details including new commits pulled in when updating packages
-                    'nodev'                  => null,  // no-dev               - Disables installation of require-dev packages
-                    'noautoloader'           => null,  // no-autoloader        - Skips autoloader generation
-                    'noscripts'              => null,  // no-scripts           - Skips the execution of all scripts defined in composer.json file
-                    'withdependencies'       => true,  // with-dependencies    - Add also all dependencies of whitelisted packages to the whitelist
-                    'ignoreplatformreqs'     => null,  // ignore-platform-reqs - Ignore platform requirements (php & ext- packages)
-                    'preferstable'           => null,  // prefer-stable        - Prefer stable versions of dependencies
-                    'preferlowest'           => null,  // prefer-lowest        - Prefer lowest versions of dependencies
+        $app['extend.action.options'] = function ($app) {
+            $composerJson = $app['filesystem']->getFile('extensions://composer.json');
+            $composerOverrides = $app['config']->get('general/extensions/composer', []);
 
-                    'sortpackages'           => true,  // sort-packages        - Sorts packages when adding/updating a new dependency
-                    'prefersource'           => false, // prefer-source        - Forces installation from package sources when possible, including VCS information
-                    'preferdist'             => true,  // prefer-dist          - Forces installation from package dist (archive) even for dev versions
-                    'update'                 => true,  // [Custom]             - Do package update as well
-                    'noupdate'               => null,  // no-update            - Disables the automatic update of the dependencies
-                    'updatenodev'            => true,  // update-no-dev        - Run the dependency update with the --no-dev option
-                    'updatewithdependencies' => true,  // update-with-dependencies - Allows inherited dependencies to be updated with explicit dependencies
+            return new Action\Options($composerJson, $composerOverrides);
+        };
+    }
 
-                    'dev'                    => null,  // dev - Add requirement to require-dev
-                                                       //       Removes a package from the require-dev section
-                                                       //       Disables autoload-dev rules
-
-                    'onlyname'               => true,  // only-name - Search only in name
-
-                    'optimizeautoloader'     => true,  // optimize-autoloader - Optimizes PSR0 and PSR4 packages to be loaded with classmaps too, good for production.
-                ];
-            }
-        );
+    public function subscribe(Container $app, EventDispatcherInterface $dispatcher)
+    {
+        $app['extensions']->register($app);
     }
 
     public function boot(Application $app)
     {
+        $app['extensions']->boot($app);
     }
 }

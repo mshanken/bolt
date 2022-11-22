@@ -5,8 +5,10 @@ namespace Bolt\Storage\Repository;
 use Bolt\Events\HydrationEvent;
 use Bolt\Events\StorageEvents;
 use Bolt\Storage\ContentLegacyService;
+use Bolt\Storage\Entity\Content;
 use Bolt\Storage\Mapping\ContentTypeTitleTrait;
 use Bolt\Storage\Repository;
+use Doctrine\DBAL\Query\QueryBuilder;
 
 /**
  * A Repository class that handles dynamically created content tables.
@@ -23,12 +25,13 @@ class ContentRepository extends Repository
      *
      * @param array  $contentType
      * @param string $order
+     * @param array  $neededFields
      *
      * @return array|false
      */
-    public function getSelectList(array $contentType, $order)
+    public function getSelectList(array $contentType, $order, $neededFields = [])
     {
-        $query = $this->querySelectList($contentType, $order);
+        $query = $this->querySelectList($contentType, $order, $neededFields);
 
         return $query->execute()->fetchAll();
     }
@@ -38,20 +41,24 @@ class ContentRepository extends Repository
      *
      * @param array  $contentType
      * @param string $order
+     * @param array  $neededFields
      *
      * @return QueryBuilder
      */
-    public function querySelectList(array $contentType, $order = null)
+    public function querySelectList(array $contentType, $order = null, $neededFields = [])
     {
+        // Only if the first character of the string is `-`, we'll need to sort DESC.'
         if (strpos($order, '-') === 0) {
-            $direction = 'ASC';
+            $direction = 'DESC';
             $order = ltrim($order, '-');
         } else {
-            $direction = 'DESC';
+            $direction = 'ASC';
         }
 
+        array_unshift($neededFields, 'id', $this->getTitleColumnName($contentType) . ' as title');
+
         $qb = $this->createQueryBuilder($contentType['tablename']);
-        $qb->select('id, ' . $this->getTitleColumnName($contentType) . ' as title');
+        $qb->select(implode(', ', $neededFields));
 
         if ($order !== null) {
             $qb->orderBy($order, $direction);
@@ -87,7 +94,7 @@ class ContentRepository extends Repository
     public function hydrateLegacyHandler(HydrationEvent $event)
     {
         $entity = $event->getArgument('entity');
-        if (get_class($entity) === 'Bolt\Storage\Entity\Content') {
+        if ($entity instanceof Content) {
             $entity->setLegacyService($this->legacy);
         }
     }

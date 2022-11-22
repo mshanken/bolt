@@ -15,9 +15,9 @@ class Thumbnail
     protected $title;
     /** @var string */
     protected $altTitle;
-    /** @var integer */
+    /** @var int */
     protected $height;
-    /** @var integer */
+    /** @var int */
     protected $width;
     /** @var string */
     protected $scale;
@@ -55,9 +55,9 @@ class Thumbnail
     {
         // After v1.5.1 we store image data as an array
         if (is_array($fileName)) {
-            $rawFileName = isset($fileName['filename']) ? $fileName['filename'] : $fileName['file'];
-            isset($fileName['title']) ? $this->title = $fileName['title'] : $rawFileName;
-            isset($fileName['alt']) ? $this->altTitle = $fileName['alt'] : $rawFileName;
+            $rawFileName = isset($fileName['filename']) ? $fileName['filename'] : (isset($fileName['file']) ? $fileName['file'] : null);
+            $this->title = isset($fileName['title']) ? $fileName['title'] : $this->title;
+            $this->altTitle = isset($fileName['alt']) ? $fileName['alt'] : $this->altTitle;
             $fileName = $rawFileName;
         }
         $this->fileName = $fileName;
@@ -120,12 +120,13 @@ class Thumbnail
 
         return $this;
     }
+
     /**
      * Get the thumbnail width.
      *
-     * @param boolean $round
+     * @param bool $round
      *
-     * @return integer
+     * @return int
      */
     public function getWidth($round = true)
     {
@@ -139,8 +140,8 @@ class Thumbnail
     /**
      * Set the thumbnail width.
      *
-     * @param integer $width
-     * @param integer $default
+     * @param int $width
+     * @param int $default
      *
      * @return Thumbnail
      */
@@ -159,9 +160,9 @@ class Thumbnail
     /**
      * Get the thumbnail height.
      *
-     * @param boolean $round
+     * @param bool $round
      *
-     * @return integer
+     * @return int
      */
     public function getHeight($round = true)
     {
@@ -175,8 +176,8 @@ class Thumbnail
     /**
      * Set the thumbnail height.
      *
-     * @param integer $height
-     * @param integer $default
+     * @param int $height
+     * @param int $default
      *
      * @return Thumbnail
      */
@@ -212,7 +213,7 @@ class Thumbnail
     public function setScale($scale)
     {
         $valid = ['b', 'c', 'f', 'r'];
-        $scale = substr($scale, 0, 1);
+        $scale = substr((string) $scale, 0, 1);
         $scale = in_array($scale, $valid)
             ? $scale
             : (!empty($this->thumbConf['cropping']) ? substr($this->thumbConf['cropping'], 0, 1) : 'c');

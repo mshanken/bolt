@@ -1,119 +1,107 @@
 <?php
-/**
- * Based on Sensio\Bundle\DistributionBundle\Composer\ScriptHandler.
- *
- * @see https://github.com/sensio/SensioDistributionBundle/blob/master/Composer/ScriptHandler.php
- */
 
 namespace Bolt\Composer;
 
-use Composer\Script\CommandEvent;
-use Symfony\Component\Filesystem\Filesystem;
+use Bolt\Composer\Script\BootstrapYamlUpdater;
+use Bolt\Composer\Script\BundleConfigurator;
+use Bolt\Composer\Script\DirectoryConfigurator;
+use Bolt\Composer\Script\DirectorySyncer;
+use Bolt\Composer\Script\ScriptHandlerUpdater;
+use Composer\Script\Event;
+use Composer\Script\ScriptEvents;
 
-class ScriptHandler
+/**
+ * Composer event script handler.
+ *
+ * @internal
+ */
+final class ScriptHandler
 {
     /**
-     * Install basic assets and create needed directories.
+     * Install Bolt's assets.
      *
-     * @param CommandEvent $event
-     * @param array|bool   $options
+     * This should be ran on "post-install-cmd" and "post-update-cmd" events.
+     *
+     * @param Event $event
+     * @param bool  $checkForCreateProject
      */
-    public static function installAssets(CommandEvent $event, $options = false)
+    public static function installAssets(Event $event, $checkForCreateProject = true)
     {
-        if (false === $options) {
-            $options = self::getOptions($event);
-        }
-        $webDir = $options['bolt-web-dir'];
-        $dirMode = $options['bolt-dir-mode'];
-        if (is_string($dirMode)) {
-            $dirMode = octdec($dirMode);
-        }
-
-        umask(0777 - $dirMode);
-
-        if (!is_dir($webDir)) {
-            echo 'The bolt-web-dir (' . $webDir . ') specified in composer.json was not found in ' . getcwd() . ', can not install assets.' . PHP_EOL;
-
+        /*
+         * Ugly hack to prevent application from being booted before configureProject can be called.
+         */
+        global $argv;
+        if ($checkForCreateProject && strpos(implode(' ', $argv), 'create-project') > 0) {
             return;
         }
 
-        $targetDir = $webDir . '/bolt-public/';
+        static::runUpdateProjectFromAssets($event);
 
-        $filesystem = new Filesystem();
-        $filesystem->remove($targetDir);
-        $filesystem->mkdir($targetDir, $dirMode);
-
-        foreach (['css', 'fonts', 'img', 'js'] as $dir) {
-            $filesystem->mirror(__DIR__ . '/../../app/view/' . $dir, $targetDir . '/view/' . $dir);
-        }
-
-        if (!$filesystem->exists($webDir . '/files/')) {
-            $filesystem->mirror(__DIR__ . '/../../files', $webDir . '/files');
-        }
-
-        if (!$filesystem->exists($webDir . '/theme/')) {
-            $filesystem->mkdir($webDir . '/theme/', $dirMode);
-            $filesystem->mirror(__DIR__ . '/../../theme', $webDir . '/theme');
-        }
-
-        // The first check handles the case where the bolt-web-dir is different to the root.
-        // If thie first works, then the second won't need to run
-        if (!$filesystem->exists(getcwd() . '/extensions/')) {
-            $filesystem->mkdir(getcwd() . '/extensions/', $dirMode);
-        }
-
-        if (!$filesystem->exists($webDir . '/extensions/')) {
-            $filesystem->mkdir($webDir . '/extensions/', $dirMode);
-        }
-
-        // Now we handle the app directory creation
-        $appDir = $options['bolt-app-dir'];
-        if (!$filesystem->exists($appDir)) {
-            $filesystem->mkdir($appDir, $dirMode);
-            $filesystem->mkdir($appDir . '/database/', $dirMode);
-            $filesystem->mkdir($appDir . '/cache/',    $dirMode);
-            $filesystem->mkdir($appDir . '/config/',   $dirMode);
-        }
-    }
-
-    public static function bootstrap(CommandEvent $event)
-    {
-        $webroot = $event->getIO()->askConfirmation('<info>Do you want your web directory to be a separate folder to root? [y/n] </info>', false);
-
-        if ($webroot) {
-            $webname  = $event->getIO()->ask('<info>What do you want your public directory to be named? [default: public] </info>', 'public');
-            $webname  = trim($webname, '/');
-            $assetDir = './' . $webname;
-        } else {
-            $webname  = null;
-            $assetDir = '.';
-        }
-
-        $generator = new BootstrapGenerator($webroot, $webname);
-        $generator->create();
-        $options = array_merge(self::getOptions($event), ['bolt-web-dir' => $assetDir]);
-        self::installAssets($event, $options);
-        $event->getIO()->write('<info>Your project has been setup</info>');
+        $syncer = DirectorySyncer::fromEvent($event);
+        $syncer->sync('bolt_assets', 'bolt_assets', true, ['css', 'fonts', 'img', 'js']);
     }
 
     /**
-     * Get a default set of options.
+     * Install Bolt's default themes and files.
      *
-     * @param CommandEvent $event
+     * This should be ran on "post-create-project-cmd" event.
      *
-     * @return array
+     * @param Event $event
      */
-    protected static function getOptions(CommandEvent $event)
+    public static function installThemesAndFiles(Event $event)
     {
-        $options = array_merge(
-            [
-                'bolt-web-dir'  => 'web',
-                'bolt-app-dir'  => 'app',
-                'bolt-dir-mode' => 0777,
-            ],
-            $event->getComposer()->getPackage()->getExtra()
-        );
+        $syncer = DirectorySyncer::fromEvent($event);
 
-        return $options;
+        $syncer->sync('files', 'files');
+        $syncer->sync('%vendor%/bolt/themes', 'themes', true, ['base-2016', 'skeleton']);
+    }
+
+    /**
+     * Updates project existing structure if needed.
+     *
+     * @param Event $event
+     */
+    public static function updateProject(Event $event)
+    {
+        BootstrapYamlUpdater::fromEvent($event)->update();
+    }
+
+    /**
+     * Configures installation's directory structure and default site bundle.
+     *
+     * The configured paths & extensions are written to .bolt.yml
+     * and the skeleton structure is modified accordingly.
+     *
+     * @param Event $event
+     */
+    public static function configureProject(Event $event)
+    {
+        DirectoryConfigurator::fromEvent($event)->run();
+        BundleConfigurator::fromEvent($event)->run();
+
+        // Install assets here since they they were skipped above
+        static::installAssets($event, false);
+    }
+
+    /**
+     * Checks if updateProject is in composer.json. If not,
+     * this adds it / shows how to add it, and then runs updateProject.
+     *
+     * @param Event $event
+     */
+    private static function runUpdateProjectFromAssets(Event $event)
+    {
+        if ($event->getName() !== ScriptEvents::POST_UPDATE_CMD) {
+            return;
+        }
+
+        $updater = new ScriptHandlerUpdater($event);
+
+        if (!$updater->needsUpdate()) {
+            return;
+        }
+        $updater->update();
+
+        static::updateProject($event);
     }
 }

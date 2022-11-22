@@ -3,7 +3,6 @@
 namespace Bolt\Controller\Async;
 
 use Bolt\Storage\ContentRequest\ListingOptions;
-use Bolt\Translation\Translator as Trans;
 use Silex\ControllerCollection;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -19,12 +18,12 @@ class Records extends AsyncBase
     {
         $c->method('POST');
 
-        $c->post('/content/{action}', 'action')
+        $c->post('/content/action', 'action')
             ->bind('contentaction');
     }
 
     /**
-     * Perform an action on a Contenttype record.
+     * Perform an action on a ContentType record.
      *
      * The action part of the POST request should take the form:
      * [
@@ -59,9 +58,7 @@ class Records extends AsyncBase
      */
     public function action(Request $request)
     {
-        //         if (!$this->checkAntiCSRFToken($request->get('bolt_csrf_token'))) {
-//             $this->app->abort(Response::HTTP_BAD_REQUEST, Trans::__('Something went wrong'));
-//         }
+        $this->validateCsrfToken();
 
         $contentType = $request->get('contenttype');
         $actionData = $request->get('actions');
@@ -71,11 +68,10 @@ class Records extends AsyncBase
 
         foreach ($actionData as $contentTypeSlug => $recordIds) {
             if (!$this->getContentType($contentTypeSlug)) {
-                // sprintf('Attempt to modify invalid ContentType: %s', $contentTypeSlug);
+                // Attempt to modify invalid ContentType
                 continue;
-            } else {
-                $this->app['storage.request.modify']->action($contentTypeSlug, $recordIds);
             }
+            $this->app['storage.request.modify']->action($contentTypeSlug, $recordIds);
         }
 
         $referer = Request::create($request->server->get('HTTP_REFERER'));
@@ -90,7 +86,9 @@ class Records extends AsyncBase
             ->setOrder($referer->query->get('order'))
             ->setPage($referer->query->get('page_' . $contentType))
             ->setFilter($referer->query->get('filter'))
-            ->setTaxonomies($taxonomy);
+            ->setTaxonomies($taxonomy)
+            ->setGroupSort(true)
+        ;
 
         $context = [
             'contenttype'     => $this->getContentType($contentType),

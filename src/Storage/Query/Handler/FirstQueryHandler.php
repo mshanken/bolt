@@ -3,9 +3,10 @@
 namespace Bolt\Storage\Query\Handler;
 
 use Bolt\Storage\Query\ContentQueryParser;
+use Bolt\Storage\Query\QueryResultset;
 
 /**
- *  Handler to modifiy query based on activation of 'first' modifier.
+ *  Handler to modify query based on activation of 'first' modifier.
  *
  *  eg: 'pages/first/3'
  */
@@ -20,6 +21,6 @@ class FirstQueryHandler
     {
         $contentQuery->setDirective('order', 'id');
 
-        return call_user_func_array($contentQuery->getHandler('select'), [$contentQuery]);
+        return call_user_func($contentQuery->getHandler('select'), $contentQuery);
     }
 }

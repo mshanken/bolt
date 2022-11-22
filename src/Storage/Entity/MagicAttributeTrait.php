@@ -1,5 +1,8 @@
 <?php
+
 namespace Bolt\Storage\Entity;
+
+use Bolt\Storage\CaseTransformTrait;
 
 /**
  * Provides access to entity attributes and the schema-less _fields
@@ -9,6 +12,8 @@ namespace Bolt\Storage\Entity;
  */
 trait MagicAttributeTrait
 {
+    use CaseTransformTrait;
+
     public $_fields = [];
 
     public function __get($key)
@@ -38,7 +43,8 @@ trait MagicAttributeTrait
     {
         if ($this->has($key) && property_exists($this, $key)) {
             unset($this->$key);
-        } elseif ($this->has($key)) {
+        }
+        if ($this->has($key)) {
             unset($this->_fields[$key]);
         }
 
@@ -47,13 +53,29 @@ trait MagicAttributeTrait
 
     public function __call($method, $arguments)
     {
-        $var = lcfirst(substr($method, 3));
+        if (method_exists($this, $method)) {
+            return call_user_func_array([$this, $method], (array) $arguments);
+        }
+
+        $var = lcfirst(preg_replace('/^(get|set|serialize)/i', '', $method));
+        $underscored = $this->underscore($var);
+        $camelized = $this->camelize($var);
+        $numericCamel = $this->underscore(preg_replace('/([a-z])([\d])/', '$1_$2', $var));
+        $try = [
+            $var,
+            $camelized,
+            $underscored,
+            $numericCamel,
+        ];
 
         if (strncasecmp($method, 'get', 3) == 0) {
-            if ($this->has($var) && property_exists($this, $var)) {
-                return $this->$var;
-            } elseif ($this->has($var)) {
-                return $this->_fields[$var];
+            foreach ($try as $test) {
+                if ($this->has($test) && property_exists($this, $test)) {
+                    return $this->$test;
+                }
+                if ($this->has($test)) {
+                    return $this->_fields[$test];
+                }
             }
         }
 
@@ -66,6 +88,8 @@ trait MagicAttributeTrait
         if (strncasecmp($method, 'set', 3) == 0) {
             if ($this->has($var) && property_exists($this, $var)) {
                 $this->$var = $arguments[0];
+            } elseif ($this->has($underscored) && property_exists($this, $underscored)) {
+                $this->$underscored = $arguments[0];
             } else {
                 $this->_fields[$var] = $arguments[0];
             }
@@ -73,7 +97,7 @@ trait MagicAttributeTrait
     }
 
     /**
-     * An internal method that builds a list of available fields depending on context
+     * An internal method that builds a list of available fields depending on context.
      *
      * @return array
      **/
@@ -82,20 +106,22 @@ trait MagicAttributeTrait
         $fields = [];
 
         foreach ($this as $k => $v) {
-            if (strpos($k, '_') !== 0) {
+            if (is_string($k) && strpos($k, '_') !== 0) {
                 $fields[] = $k;
             }
         }
 
         foreach ($this->_fields as $k => $v) {
-            $fields[] = $k;
+            if (is_string($k)) {
+                $fields[] = $k;
+            }
         }
 
         return $fields;
     }
 
     /**
-     * Boolean check on whether entity has field
+     * Boolean check on whether entity has field.
      *
      * @param string $field
      *

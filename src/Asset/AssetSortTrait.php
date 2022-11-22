@@ -10,7 +10,7 @@ namespace Bolt\Asset;
 trait AssetSortTrait
 {
     /**
-     * Do a Schwartzian Transform for stable sort
+     * Do a Schwartzian Transform for stable sort.
      *
      * @see http://en.wikipedia.org/wiki/Schwartzian_transform
      *
@@ -23,11 +23,12 @@ trait AssetSortTrait
         array_walk(
             $assets,
             function (&$v, $k) {
+                /** @var AssetInterface $v */
                 $v = [$v->getPriority(), $k, $v];
             }
         );
 
-        sort($assets);
+        rsort($assets);
 
         array_walk(
             $assets,

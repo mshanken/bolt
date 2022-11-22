@@ -1,11 +1,15 @@
 <?php
+
 namespace Bolt\Storage;
 
+use Bolt\Exception\InvalidRepositoryException;
+use Bolt\Exception\StorageException;
 use Bolt\Legacy\Storage;
 use Bolt\Storage\Collection\CollectionManager;
-use Bolt\Storage\Entity\Builder;
 use Bolt\Storage\Mapping\ClassMetadata;
 use Bolt\Storage\Mapping\MetadataDriver;
+use Bolt\Storage\Repository\ContentRepository;
+use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Persistence\Mapping\ClassMetadata as ClassMetadataInterface;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Query\Expression\ExpressionBuilder;
@@ -22,9 +26,9 @@ use Symfony\Component\EventDispatcher\EventDispatcherInterface;
  *
  * @method array getContentType($contenttypeslug)
  * @method void  publishTimedRecords($contenttype)
- * @method void  depublishTimedRecords($contenttype)
+ * @method void  depublishExpiredRecords($contenttype)
  */
-class EntityManager
+class EntityManager implements EntityManagerInterface
 {
     /** @var Connection */
     protected $conn;
@@ -34,7 +38,7 @@ class EntityManager
     protected $mapping;
     /** @var LoggerInterface */
     protected $logger;
-    /** @var Builder */
+    /** @var Entity\Builder */
     protected $builder;
     /** @var FieldManager */
     protected $fieldManager;
@@ -46,8 +50,10 @@ class EntityManager
     protected $aliases = [];
     /** @var Storage */
     protected $legacyStorage;
-    /** @var Callable */
+    /** @var callable */
     protected $defaultRepositoryFactory;
+    /** @var  ContentLegacyService */
+    protected $legacyService;
 
     /**
      * Creates a new EntityManager that operates on the given database connection
@@ -60,10 +66,10 @@ class EntityManager
      */
     public function __construct(Connection $conn, EventDispatcherInterface $eventManager, MetadataDriver $mapping, LoggerInterface $logger = null)
     {
-        $this->conn         = $conn;
+        $this->conn = $conn;
         $this->eventManager = $eventManager;
-        $this->mapping      = $mapping;
-        $this->logger       = $logger ?: new NullLogger();
+        $this->mapping = $mapping;
+        $this->logger = $logger ?: new NullLogger();
     }
 
     /**
@@ -85,10 +91,11 @@ class EntityManager
     /**
      * Creates an entity of the given class, with the data supplied.
      *
-     * @param string $className The type of entity to create
-     * @param array  $data      The data to use to hydrate the new entity
+     * @param string                 $className The type of entity to create
+     * @param array                  $data      The data to use to hydrate the new entity
+     * @param ClassMetadataInterface $metadata
      *
-     * @return Entity
+     * @return Entity\Entity
      */
     public function create($className, $data, ClassMetadataInterface $metadata = null)
     {
@@ -107,7 +114,7 @@ class EntityManager
      */
     public function getEntityBuilder($className = null, ClassMetadata $classMetadata = null)
     {
-        $builder = new Builder($this->getMapper(), $this->getFieldManager());
+        $builder = new Entity\Builder($this->getMapper(), $this->getFieldManager());
 
         if ($className !== null) {
             $builder->setClass($className);
@@ -123,11 +130,9 @@ class EntityManager
     /**
      * Set an entity builder instance.
      *
-     * @param Builder $builder
-     *
-     * @return Entity\Builder
+     * @param Entity\Builder $builder
      */
-    public function setEntityBuilder(Builder $builder)
+    public function setEntityBuilder(Entity\Builder $builder)
     {
         $this->builder = $builder;
     }
@@ -173,9 +178,9 @@ class EntityManager
     /**
      * Shorthand access method to create collection. Consults aliases to allow short names.
      *
-     * @param $className
+     * @param string|Entity\Entity $className
      *
-     * @return mixed
+     * @return ArrayCollection
      */
     public function createCollection($className)
     {
@@ -192,10 +197,10 @@ class EntityManager
      *
      * This is just a convenient shortcut for getRepository($className)->find($id).
      *
-     * @param string $className The class name of the object to find.
-     * @param mixed  $id        The identity of the object to find.
+     * @param string     $className class name of the object to find
+     * @param int|string $id        identity of the object to find
      *
-     * @return object The found object.
+     * @return object the found object
      */
     public function find($className, $id)
     {
@@ -207,9 +212,9 @@ class EntityManager
     /**
      * The object will be entered into the database as a result of this operation.
      *
-     * @param object $object The instance to persist to storage.
+     * @param object $object the instance to persist to storage
      *
-     * @return boolean
+     * @return bool
      */
     public function save($object)
     {
@@ -228,9 +233,9 @@ class EntityManager
      *
      * Passed in object will be removed from the database as a result of this operation.
      *
-     * @param object $object The object instance to remove.
+     * @param object $object the object instance to remove
      *
-     * @return boolean
+     * @return bool
      */
     public function delete($object)
     {
@@ -241,35 +246,43 @@ class EntityManager
     }
 
     /**
-     * Gets the repository for a class.
-     *
-     * @param string $className
-     *
-     * @return Repository
+     * {@inheritdoc}
      */
     public function getRepository($className)
     {
+        /** @var Repository $repo */
+        $repo = null;
+
         $className = (string) $className;
         if (array_key_exists($className, $this->aliases)) {
-            $classMetadata = $this->getMapper()->loadMetadataForClass($this->aliases[$className]);
-        } else {
+            $className = $this->aliases[$className];
+        }
+
+        try {
             $classMetadata = $this->getMapper()->loadMetadataForClass($className);
+        } catch (StorageException $e) {
+            throw new InvalidRepositoryException("Attempted to load repository for invalid class or alias: $className. Check that the class, alias or contenttype definition is correct.");
         }
 
-        if (array_key_exists($className, $this->repositories)) {
-            $repoClass = $this->repositories[$className];
-
-            return new $repoClass($this, $classMetadata);
+        if (array_key_exists($classMetadata->getName(), $this->repositories)) {
+            $repoClass = $this->repositories[$classMetadata->getName()];
+            if (is_callable($repoClass)) {
+                $repo = call_user_func($repoClass, $this, $classMetadata);
+            } else {
+                $repo = new $repoClass($this, $classMetadata);
+            }
         }
 
-        foreach ($this->aliases as $alias => $namespace) {
-            $full = str_replace($alias, $namespace, $className);
+        if ($repo === null) {
+            foreach ($this->aliases as $alias => $namespace) {
+                $full = str_replace($alias, $namespace, $className);
 
-            if (array_key_exists($full, $this->repositories)) {
-                $classMetadata = $this->getMapper()->loadMetadataForClass($full);
-                $repoClass = $this->repositories[$full];
+                if (array_key_exists($full, $this->repositories)) {
+                    $classMetadata = $this->getMapper()->loadMetadataForClass($full);
+                    $repoClass = $this->repositories[$full];
 
-                return new $repoClass($this, $classMetadata);
+                    $repo = new $repoClass($this, $classMetadata);
+                }
             }
         }
 
@@ -279,19 +292,28 @@ class EntityManager
          * the content repository, but in time this should be a metadata level
          * configuration.
          */
-        if ($this->getMapper()->resolveClassName($className) === 'Bolt\Storage\Entity\Content') {
-            return $this->getDefaultRepositoryFactory($classMetadata);
+        if ($repo === null && $this->getMapper()->resolveClassName($className) === Entity\Content::class) {
+            $repo = $this->getDefaultRepositoryFactory($classMetadata);
         }
 
         /*
          * If the fetched metadata isn't mapped to a specific entity then we treat
          * it as a generic Content repo
          */
-        if (in_array($className, $this->getMapper()->getUnmapped())) {
-            return $this->getDefaultRepositoryFactory($classMetadata);
+        if ($repo === null && in_array($className, $this->getMapper()->getUnmapped())) {
+            $repo = $this->getDefaultRepositoryFactory($classMetadata);
         }
 
-        return new Repository($this, $classMetadata);
+        if ($repo === null) {
+            $repo = new Repository($this, $classMetadata);
+        }
+
+        if ($repo instanceof Repository\ContentRepository) {
+            /** @var ContentRepository $repo */
+            $repo->setLegacyService($this->legacyService);
+        }
+
+        return $repo;
     }
 
     /**
@@ -317,7 +339,7 @@ class EntityManager
     }
 
     /**
-     * Returns the default repository factory set on this object
+     * Returns the default repository factory set on this object.
      *
      * @param ClassMetadataInterface $classMetadata
      *
@@ -379,7 +401,7 @@ class EntityManager
     }
 
     /**
-     * Returns a proxy to the legacy storage service
+     * Returns a proxy to the legacy storage service.
      *
      * @return Storage
      */
@@ -389,7 +411,7 @@ class EntityManager
     }
 
     /**
-     * Sets the LegacyRepository
+     * Sets the LegacyRepository.
      *
      * @param Storage $storage
      */
@@ -399,7 +421,17 @@ class EntityManager
     }
 
     /**
-     * Getter for logger object
+     * Sets the LegacyRepository.
+     *
+     * @param ContentLegacyService $service
+     */
+    public function setLegacyService(ContentLegacyService $service)
+    {
+        $this->legacyService = $service;
+    }
+
+    /**
+     * Getter for logger object.
      *
      * @return LoggerInterface
      */
@@ -411,22 +443,21 @@ class EntityManager
     /******* Deprecated functions ******/
 
     /**
-     * Magic call method acts as a catchall proxy to the legacy repository
+     * Magic call method acts as a catchall proxy to the legacy repository.
      *
      * @param string $method
-     * @param string $args
+     * @param array  $args
      *
      * @return mixed
      */
-    public function __call($method, $args)
+    public function __call($method, array $args)
     {
-        //$this->getLogger()->warning('[DEPRECATED] Accessing ['storage']->$method is no longer supported and will be removed in a future version.');
         return call_user_func_array([$this->legacy(), $method], $args);
     }
 
     /**
      * Note that this method is explicitly defined here because the magic method above cannot
-     * pass dynamic variables by reference
+     * pass dynamic variables by reference.
      *
      * @param string $textquery
      * @param array  $parameters

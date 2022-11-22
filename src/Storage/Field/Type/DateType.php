@@ -1,13 +1,14 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
 
 use Bolt\Exception\QueryParseException;
 use Bolt\Storage\EntityManager;
+use Bolt\Storage\Mapping;
 use Bolt\Storage\Mapping\ClassMetadata;
 use Bolt\Storage\Query\QueryInterface;
 use Bolt\Storage\QuerySet;
 use Carbon\Carbon;
-use Doctrine\DBAL\Types\Type;
 
 /**
  * This is one of a suite of basic Bolt field transformers that handles
@@ -18,12 +19,11 @@ use Doctrine\DBAL\Types\Type;
 class DateType extends FieldTypeBase
 {
     /**
-     * @inheritdoc
+     * {@inheritdoc}
      */
     public function __construct(array $mapping = [], EntityManager $em = null)
     {
         parent::__construct($mapping, $em);
-        Type::overrideType(Type::DATE, 'Bolt\Storage\Mapping\Type\CarbonDateType');
     }
 
     /**
@@ -34,7 +34,9 @@ class DateType extends FieldTypeBase
      * @param QueryInterface $query
      * @param ClassMetadata  $metadata
      *
-     * @return void
+     * @throws QueryParseException
+     *
+     * @return \Doctrine\DBAL\Query\QueryBuilder|null
      */
     public function query(QueryInterface $query, ClassMetadata $metadata)
     {
@@ -53,7 +55,7 @@ class DateType extends FieldTypeBase
     /**
      * {@inheritdoc}
      */
-    public function persist(QuerySet $queries, $entity, EntityManager $em = null)
+    public function persist(QuerySet $queries, $entity)
     {
         $key = $this->mapping['fieldname'];
         $value = $entity->get($key);
@@ -64,7 +66,7 @@ class DateType extends FieldTypeBase
             $entity->set($key, $value);
         }
 
-        parent::persist($queries, $entity, $em);
+        parent::persist($queries, $entity);
     }
 
     /**

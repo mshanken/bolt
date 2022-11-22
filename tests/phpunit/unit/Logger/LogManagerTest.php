@@ -1,9 +1,14 @@
 <?php
+
 namespace Bolt\Tests\Logger;
 
 use Bolt\Logger\Manager;
+use Bolt\Storage\Entity;
+use Bolt\Storage\Repository\LogChangeRepository;
+use Bolt\Storage\Repository\LogSystemRepository;
 use Bolt\Tests\BoltUnitTest;
 use Bolt\Tests\Mocks\DoctrineMockBuilder;
+use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
@@ -30,13 +35,15 @@ class LogManagerTest extends BoltUnitTest
         $app = $this->getApp();
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('executeUpdate')
             ->with($this->equalTo('DELETE FROM bolt_log_system WHERE date < :date'));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $log = $this->getLogManager($app);
         $log->trim('system');
+
+        $this->addToAssertionCount(1);
     }
 
     public function testChange()
@@ -44,23 +51,32 @@ class LogManagerTest extends BoltUnitTest
         $app = $this->getApp();
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('executeUpdate')
             ->with($this->equalTo('DELETE FROM bolt_log_change WHERE date < :date'));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $log = $this->getLogManager($app);
         $log->trim('change');
+
+        $this->addToAssertionCount(1);
     }
 
+    /**
+     * @expectedException \Exception
+     * @expectedExceptionMessage Invalid log type requested: invalid
+     */
     public function testInvalid()
     {
         $app = $this->getApp();
         $log = $this->getLogManager($app);
-        $this->setExpectedException('Exception', 'Invalid log type requested: invalid');
         $log->trim('invalid');
     }
 
+    /**
+     * @expectedException \Exception
+     * @expectedExceptionMessage Invalid log type requested: invalid
+     */
     public function testClear()
     {
         $app = $this->getApp();
@@ -74,12 +90,11 @@ class LogManagerTest extends BoltUnitTest
             ->method('executeQuery')
             ->with($this->equalTo('TRUNCATE bolt_log_change'));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $log = $this->getLogManager($app);
         $log->clear('system');
         $log->clear('change');
 
-        $this->setExpectedException('Exception', 'Invalid log type requested: invalid');
         $log->clear('invalid');
     }
 
@@ -90,7 +105,7 @@ class LogManagerTest extends BoltUnitTest
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
         $queries = [];
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('executeQuery')
             ->will($this->returnCallback(
                 function ($query, $params) use (&$queries, $mocker) {
@@ -100,11 +115,13 @@ class LogManagerTest extends BoltUnitTest
                 }
             ));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $app['request'] = Request::createFromGlobals();
 
         $log = $this->getLogManager($app);
         $log->getActivity('system', 10);
+
+        $this->addToAssertionCount(1);
     }
 
     public function testGetActivityChange()
@@ -114,7 +131,7 @@ class LogManagerTest extends BoltUnitTest
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
         $queries = [];
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('executeQuery')
             ->will($this->returnCallback(
                 function ($query, $params) use (&$queries, $mocker) {
@@ -124,18 +141,23 @@ class LogManagerTest extends BoltUnitTest
                 }
             ));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $app['request'] = Request::createFromGlobals();
 
         $log = $this->getLogManager($app);
         $log->getActivity('change', 10);
+
+        $this->addToAssertionCount(1);
     }
 
+    /**
+     * @expectedException \Exception
+     * @expectedExceptionMessage Invalid log type requested: invalid
+     */
     public function testGetActivityInvalid()
     {
         $app = $this->getApp();
         $log = $this->getLogManager($app);
-        $this->setExpectedException('Exception', 'Invalid log type requested: invalid');
         $log->getActivity('invalid', 10);
     }
 
@@ -146,7 +168,7 @@ class LogManagerTest extends BoltUnitTest
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
         $queries = [];
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('executeQuery')
             ->will($this->returnCallback(
                 function ($query, $params) use (&$queries, $mocker) {
@@ -156,20 +178,26 @@ class LogManagerTest extends BoltUnitTest
                 }
             ));
 
-        $app['db'] = $db;
+        $this->setService('db', $db);
         $app['request'] = Request::createFromGlobals();
 
         $log = $this->getLogManager($app);
         $log->getActivity('change', 10, 3, ['contenttype' => 'pages']);
+
+        $this->addToAssertionCount(1);
     }
 
     /**
+     * @param Application $app
+     *
      * @return \Bolt\Logger\Manager
      */
     protected function getLogManager($app)
     {
-        $changeRepository = $app['storage']->getRepository('Bolt\Storage\Entity\LogChange');
-        $systemRepository = $app['storage']->getRepository('Bolt\Storage\Entity\LogSystem');
+        /** @var LogChangeRepository $changeRepository */
+        $changeRepository = $app['storage']->getRepository(Entity\LogChange::class);
+        /** @var LogSystemRepository $systemRepository */
+        $systemRepository = $app['storage']->getRepository(Entity\LogSystem::class);
 
         return new Manager($app, $changeRepository, $systemRepository);
     }

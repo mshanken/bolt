@@ -1,8 +1,12 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
 
+use Bolt\Exception\StorageException;
+use Bolt\Storage\Collection;
 use Bolt\Storage\Entity;
 use Bolt\Storage\Mapping\ClassMetadata;
+use Bolt\Storage\Query;
 use Bolt\Storage\Query\QueryInterface;
 use Bolt\Storage\QuerySet;
 use Doctrine\DBAL\Query\QueryBuilder;
@@ -14,7 +18,7 @@ use Doctrine\DBAL\Query\QueryBuilder;
  * @author Ross Riley <riley.ross@gmail.com>
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
-class RelationType extends FieldTypeBase
+class RelationType extends JoinTypeBase
 {
     /**
      * Relation fields can allow filters on the relations fetched. For now this is limited
@@ -31,25 +35,19 @@ class RelationType extends FieldTypeBase
      * @param QueryInterface $query
      * @param ClassMetadata  $metadata
      *
-     * @return void
+     * @return QueryBuilder|null
      */
     public function query(QueryInterface $query, ClassMetadata $metadata)
     {
         $field = $this->mapping['fieldname'];
-
+        /** @var Query\SelectQuery $query */
         foreach ($query->getFilters() as $filter) {
             if ($filter->getKey() == $field) {
-                // This gets the method name, one of andX() / orX() depending on type of expression
-                $method = strtolower($filter->getExpressionObject()->getType()) . 'X';
-
-                $newExpr = $query->getQueryBuilder()->expr()->$method();
-                foreach ($filter->getParameters() as $k => $v) {
-                    $newExpr->add("$field.to_id = :$k");
-                }
-
-                $filter->setExpression($newExpr);
+                $this->rewriteQueryFilterParameters($filter, $query, $field, 'to_id');
             }
         }
+
+        return null;
     }
 
     /**
@@ -62,7 +60,7 @@ class RelationType extends FieldTypeBase
      * @param QueryBuilder  $query
      * @param ClassMetadata $metadata
      *
-     * @return void
+     * @return QueryBuilder|null|void
      */
     public function load(QueryBuilder $query, ClassMetadata $metadata)
     {
@@ -83,7 +81,10 @@ class RelationType extends FieldTypeBase
             ->addSelect($this->getPlatformGroupConcat("$field.id", '_' . $field . '_id', $query))
             ->addSelect($this->getPlatformGroupConcat("$field.to_id", '_' . $field . '_toid', $query))
             ->leftJoin($alias, $target, $field, "$alias.id = $field.from_id AND $field.from_contenttype='$boltname' AND $field.to_contenttype='$field'")
-            ->addGroupBy("$alias.id");
+            ->addGroupBy("$alias.id")
+        ;
+
+        return null;
     }
 
     /**
@@ -93,23 +94,26 @@ class RelationType extends FieldTypeBase
     {
         $field = $this->mapping['fieldname'];
         $data = $this->normalizeData($data, $field);
+        /** @var Entity\Content $entity */
         if (!count($entity->getRelation())) {
-            $entity->setRelation($this->em->createCollection('Bolt\Storage\Entity\Relations'));
+            $entity->setRelation($this->em->createCollection(Entity\Relations::class));
         }
 
-        $fieldRels = $this->em->createCollection('Bolt\Storage\Entity\Relations');
+        $fieldRels = $this->em->createCollection(Entity\Relations::class);
         foreach ($data as $relData) {
-            $rel = [];
-            $rel['id'] = $relData['id'];
-            $rel['from_id'] = $entity->getId();
-            $rel['from_contenttype'] = (string) $entity->getContenttype();
-            $rel['to_contenttype'] = $field;
-            $rel['to_id'] = $relData['toid'];
-            $relEntity = new Entity\Relations($rel);
-            $entity->getRelation()->add($relEntity);
-            $fieldRels->add($relEntity);
+            if (isset($relData['id']) && isset($relData['toid'])) {
+                $rel = [];
+                $rel['id'] = $relData['id'];
+                $rel['from_id'] = $entity->getId();
+                $rel['from_contenttype'] = (string) $entity->getContenttype();
+                $rel['to_contenttype'] = $field;
+                $rel['to_id'] = $relData['toid'];
+                $relEntity = new Entity\Relations($rel);
+                $entity->getRelation()->add($relEntity);
+                $fieldRels->add($relEntity);
+            }
         }
-        $this->set($entity, $fieldRels);
+        $this->set($entity, $fieldRels[$field]);
     }
 
     /**
@@ -117,23 +121,35 @@ class RelationType extends FieldTypeBase
      */
     public function persist(QuerySet $queries, $entity)
     {
+        $this->normalize($entity);
         $field = $this->mapping['fieldname'];
         $relations = $entity->getRelation()
             ->getField($field);
 
         // Fetch existing relations and create two sets of records, updates and deletes.
         $existingDB = $this->getExistingRelations($entity) ?: [];
-        $collection = $this->em->createCollection('Bolt\Storage\Entity\Relations');
+        $existingInverse = $this->getInverseRelations($entity) ?: [];
+        /** @var Collection\Relations $collection */
+        $collection = $this->em->createCollection(Entity\Relations::class);
         $collection->setFromDatabaseValues($existingDB);
         $toDelete = $collection->update($relations);
-        $repo = $this->em->getRepository('Bolt\Storage\Entity\Relations');
+        $repo = $this->em->getRepository(Entity\Relations::class);
+
+        // If we have bidirectional relations we need to delete the old inverted relations
+        /** @var Collection\Relations $inverseCollection */
+        $inverseCollection = $this->em->createCollection(Entity\Relations::class);
+        $inverseCollection->setFromDatabaseValues($existingInverse);
 
         // Add a listener to the main query save that sets the from ID on save and then saves the relations
         $queries->onResult(
-            function ($query, $result, $id) use ($repo, $collection, $toDelete) {
+            function ($query, $result, $id) use ($repo, $collection, $toDelete, $inverseCollection) {
                 foreach ($collection as $entity) {
                     $entity->from_id = $id;
-                    $repo->save($entity);
+                    $repo->save($entity, true);
+                }
+
+                foreach ($inverseCollection as $entity) {
+                    $repo->delete($entity);
                 }
 
                 foreach ($toDelete as $entity) {
@@ -177,11 +193,38 @@ class RelationType extends FieldTypeBase
     }
 
     /**
-     * Get platform specific group_concat token for provided column
+     * Get inverse relationship records. That is ones where the definition happened on the opposite record.
+     *
+     * @param mixed $entity
+     *
+     * @return array
+     */
+    protected function getInverseRelations($entity)
+    {
+        $query = $this->em->createQueryBuilder()
+            ->select('*')
+            ->from($this->mapping['target'])
+            ->where('to_id = :to_id')
+            ->andWhere('to_contenttype = :to_contenttype')
+            ->andWhere('from_contenttype = :from_contenttype')
+            ->setParameters([
+                'to_id'            => $entity->id,
+                'to_contenttype'   => $entity->getContenttype(),
+                'from_contenttype' => $this->mapping['fieldname'],
+            ]);
+        $result = $query->execute()->fetchAll();
+
+        return $result ?: [];
+    }
+
+    /**
+     * Get platform specific group_concat token for provided column.
      *
      * @param string       $column
      * @param string       $alias
      * @param QueryBuilder $query
+     *
+     * @throws StorageException
      *
      * @return string
      */
@@ -194,7 +237,32 @@ class RelationType extends FieldTypeBase
             case 'sqlite':
                 return "GROUP_CONCAT($column) as $alias";
             case 'postgresql':
-                return "string_agg($column, ',') as $alias";
+                return "string_agg($column" . "::character varying, ',') as $alias";
+        }
+
+        throw new StorageException(sprintf('Unsupported platform: %s', $platform));
+    }
+
+    /**
+     * The normalize method takes care of any pre-persist cleaning up.
+     *
+     * For relations that allows us to support non standard data formats such
+     * as arrays that allow this style data setting to work...
+     *
+     *   `$entity->setPages(['1', '2']);`
+     *
+     *    or
+     *
+     *   `$entity->setRelation(['pages'=>['1', '2']]);`
+     *
+     * @param Entity\Content $entity
+     */
+    public function normalize($entity)
+    {
+        /** @var Collection\Relations $collection */
+        $collection = $this->normalizeFromPost($entity, Entity\Relations::class);
+        if ($collection) {
+            $entity->setRelation($collection);
         }
     }
 }

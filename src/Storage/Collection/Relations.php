@@ -9,7 +9,7 @@ use Bolt\Storage\EntityProxy;
 use Doctrine\Common\Collections\ArrayCollection;
 
 /**
- * This class stores an array collection of Relations Entities
+ * This class stores an array collection of Relations Entities.
  *
  * @author Ross Riley <riley.ross@gmail.com>
  */
@@ -29,35 +29,47 @@ class Relations extends ArrayCollection
         $this->em = $em;
     }
 
+    /**
+     * @param EntityManager $em
+     */
     public function setEntityManager(EntityManager $em)
     {
         $this->em = $em;
     }
 
-    public function setFromPost($formValues, $entity)
+    /**
+     * @param array          $formValues
+     * @param Entity\Content $entity
+     */
+    public function setFromPost(array $formValues, Entity\Content $entity)
     {
-        if (isset($formValues['relation'])) {
-            $flatVals = $formValues['relation'];
-        } else {
-            $flatVals = $formValues;
+        if (!isset($formValues['relation'])) {
+            return;
         }
+        $flatVals = $formValues['relation'];
         foreach ($flatVals as $field => $values) {
+            if (!is_array($values)) {
+                continue;
+            }
             foreach ($values as $val) {
                 if (!$val) {
                     continue;
                 }
-                $newentity = new Entity\Relations([
+                $newEntity = new Entity\Relations([
                     'from_contenttype' => (string) $entity->getContenttype(),
                     'from_id'          => $entity->getId(),
                     'to_contenttype'   => $field,
-                    'to_id'            => $val
+                    'to_id'            => $val,
                 ]);
-                $this->add($newentity);
+                $this->add($newEntity);
             }
         }
     }
 
-    public function setFromDatabaseValues($result)
+    /**
+     * @param array $result
+     */
+    public function setFromDatabaseValues(array $result)
     {
         foreach ($result as $item) {
             $this->add(new Entity\Relations($item));
@@ -101,23 +113,43 @@ class Relations extends ArrayCollection
     }
 
     /**
+     * Get the related types that are in the collection, grouped by ContentType key.
+     *
+     * @internal
+     *
+     * @return array
+     */
+    public function getGrouped()
+    {
+        $types = [];
+        $elements = $this->toArray();
+        /** @var Entity\Relations $element */
+        foreach ($elements as $element) {
+            $type = $element->get('to_contenttype');
+            $types[$type][] = $element;
+        }
+
+        return $types;
+    }
+
+    /**
      * This loops over the existing collection to see if the properties in the incoming
      * are already available on a saved record. To do this it checks the four key properties
      * if there's a match it returns the original, otherwise
      * it returns the new and adds the new one to the collection.
      *
-     * @param $entity
+     * @param Entity\Relations $entity
      *
      * @return mixed|null
      */
-    public function getOriginal($entity)
+    public function getOriginal(Entity\Relations $entity)
     {
         foreach ($this as $k => $existing) {
             if (
-                $existing->getFrom_id() == $entity->getFrom_id() &&
-                $existing->getFrom_contenttype() == $entity->getFrom_contenttype() &&
-                $existing->getTo_contenttype() == $entity->getTo_contenttype() &&
-                $existing->getTo_id() == $entity->getTo_id()
+                $existing->getFromId() == $entity->getFromId() &&
+                $existing->getFromContenttype() === $entity->getFromContenttype() &&
+                $existing->getToContenttype() === $entity->getToContenttype() &&
+                $existing->getToId() == $entity->getToId()
             ) {
                 return $existing;
             }
@@ -127,43 +159,72 @@ class Relations extends ArrayCollection
     }
 
     /**
-     * Gets a specific relation type name from the overall collection
+     * Gets a specific relation type name from the overall collection.
      *
-     * @param $fieldname
+     * @param string $fieldName
+     * @param bool   $biDirectional
+     * @param string $contentTypeName
+     * @param int    $contentTypeId
      *
      * @return Relations
      */
-    public function getField($fieldname)
+    public function getField($fieldName, $biDirectional = false, $contentTypeName = null, $contentTypeId = null)
     {
-        return $this->filter(function ($el) use ($fieldname) {
-            return $el->getTo_contenttype() == $fieldname;
+        if ($biDirectional) {
+            $filter = function ($el) use ($fieldName, $contentTypeName, $contentTypeId) {
+                /** @var Entity\Relations $el */
+                if ($el->getFromContenttype() === $fieldName && $el->getFromContenttype() === $el->getToContenttype() && $el->getToId() == $contentTypeId) {
+                    $el->actAsInverse();
+
+                    return true;
+                }
+                if ($el->getToContenttype() === $fieldName && $el->getFromContenttype() === $contentTypeName) {
+                    return true;
+                }
+                if ($el->getFromContenttype() === $fieldName && $el->getToContenttype() === $contentTypeName) {
+                    $el->actAsInverse();
+
+                    return true;
+                }
+
+                return false;
+            };
+
+            return $this->filter($filter);
+        }
+
+        return $this->filter(function ($el) use ($fieldName) {
+            /** @var Entity\Relations $el */
+            return $el->getToContenttype() === $fieldName;
         });
     }
 
     /**
-     * Identifies which relations are incoming to the given entity
+     * Identifies which relations are incoming to the given entity.
      *
-     * @param $entity
+     * @param Entity\Content $entity
      *
      * @return mixed
      */
-    public function incoming($entity)
+    public function incoming(Entity\Content $entity)
     {
         return $this->filter(function ($el) use ($entity) {
-            return $el->getTo_contenttype() == (string) $entity->getContenttype();
+            /** @var Entity\Relations $el */
+            return $el->getToContenttype() == (string) $entity->getContenttype() && $el->getToId() === $entity->getId();
         });
     }
 
     /**
      * Overrides the default to allow fetching a sub-selection.
      *
-     * {@inheritDoc}
+     * {@inheritdoc}
      */
     public function offsetGet($offset)
     {
         if ($this->em === null) {
             throw new StorageException('Unable to load collection values. Ensure that EntityManager is set on ' . __CLASS__);
         }
+
         $collection = new LazyCollection();
         $proxies = $this->getField($offset);
         foreach ($proxies as $proxy) {
@@ -171,5 +232,15 @@ class Relations extends ArrayCollection
         }
 
         return $collection;
+    }
+
+    public function serialize()
+    {
+        $output = [];
+        foreach ($this as $k => $existing) {
+            $output[$existing->getToContenttype()][] = spl_object_hash($existing);
+        }
+
+        return $output;
     }
 }

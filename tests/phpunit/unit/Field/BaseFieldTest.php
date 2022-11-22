@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Tests\Field;
 
 use Bolt\Storage\Field\Base;
@@ -13,12 +14,17 @@ class BaseFieldTest extends BoltUnitTest
 {
     public function testFieldSetup()
     {
-        $field = $this->getMock('Bolt\Storage\Field\Base', null, ['test', 'test.twig']);
+        /** @var Base $field */
+        $field = $this->getMockBuilder(Base::class)
+            ->setMethods(null)
+            ->setConstructorArgs(['test', 'test.twig'])
+            ->getMock()
+        ;
         $this->assertEquals('test', $field->getName());
         $this->assertEquals('test.twig', $field->getTemplate());
 
         // This tests the default returns for base
-        $this->assertEquals('text', $field->getStorageType());
+        $this->assertEquals('Text', (string) $field->getStorageType());
         $this->assertEquals([], $field->getStorageOptions());
     }
 }

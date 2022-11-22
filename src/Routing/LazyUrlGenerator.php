@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Routing;
 
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
@@ -7,13 +8,13 @@ use Symfony\Component\Routing\RequestContext;
 /**
  * Implements a lazy UrlGenerator.
  * Similar concept with {@see \Silex\LazyUrlMatcher LazyUrlMatcher} and
- * {@see \Symfony\Component\HttpKernel\EventListener\RouterListener RouterListener}
+ * {@see \Symfony\Component\HttpKernel\EventListener\RouterListener RouterListener}.
  *
  * @author Carson Full <carsonfull@gmail.com>
  */
 class LazyUrlGenerator implements UrlGeneratorInterface
 {
-    /** @var \Closure $factory */
+    /** @var callable $factory */
     private $factory;
     /** @var UrlGeneratorInterface $urlGenerator */
     private $urlGenerator;
@@ -21,9 +22,9 @@ class LazyUrlGenerator implements UrlGeneratorInterface
     /**
      * LazyUrlGenerator constructor.
      *
-     * @param \Closure $factory Should return UrlGeneratorInterface when invoked
+     * @param callable $factory Should return UrlGeneratorInterface when invoked
      */
-    public function __construct(\Closure $factory)
+    public function __construct(callable $factory)
     {
         $this->factory = $factory;
     }

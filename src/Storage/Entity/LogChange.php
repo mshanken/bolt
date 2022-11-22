@@ -1,55 +1,190 @@
 <?php
+
 namespace Bolt\Storage\Entity;
+
+use Bolt\Common\Json;
+use Bolt\Storage\Mapping\ClassMetadata;
 
 /**
  * Entity for change logs.
- *
- * @method integer   getId()
- * @method \DateTime getDate()
- * @method integer   getOwnerid()
- * @method string    getTitle()
- * @method string    getContenttype()
- * @method integer   getContentid()
- * @method string    getMutationType()
- * @method array     getDiff()
- * @method string    getComment()
- * @method setId($id)
- * @method setDate(\DateTime $date)
- * @method setOwnerid($ownerid)
- * @method setTitle($title)
- * @method setContenttype($contenttype)
- * @method setContentid($contentid)
- * @method setMutationType($mutationType)
- * @method setDiff($diff)
- * @method setComment($comment)
  */
 class LogChange extends Entity
 {
-    protected $id;
+    /** @var \DateTime */
     protected $date;
+    /** @var int */
     protected $ownerid;
+    /** @var string */
     protected $title;
+    /** @var string */
     protected $contenttype;
+    /** @var int */
     protected $contentid;
-    protected $mutationType;
+    /** @var string */
+    protected $mutation_type;
+    /** @var array */
     protected $diff;
+    /** @var string */
     protected $comment;
+    /** @var ClassMetadata */
+    protected $contentTypeMeta;
+
+    /**
+     * @return \DateTime
+     */
+    public function getDate()
+    {
+        return $this->date;
+    }
+
+    /**
+     * @param \DateTime $date
+     */
+    public function setDate($date)
+    {
+        $this->date = $date;
+    }
+
+    /**
+     * @return int
+     */
+    public function getOwnerId()
+    {
+        return $this->ownerid;
+    }
+
+    /**
+     * @param int $ownerId
+     */
+    public function setOwnerId($ownerId)
+    {
+        $this->ownerid = $ownerId;
+    }
+
+    /**
+     * @return string
+     */
+    public function getTitle()
+    {
+        return $this->title;
+    }
+
+    /**
+     * @param string $title
+     */
+    public function setTitle($title)
+    {
+        $this->title = $title;
+    }
+
+    /**
+     * @return string
+     */
+    public function getContentType()
+    {
+        return $this->contenttype;
+    }
+
+    /**
+     * @param string $contentType
+     */
+    public function setContentType($contentType)
+    {
+        $this->contenttype = $contentType;
+    }
+
+    /**
+     * @return int
+     */
+    public function getContentId()
+    {
+        return $this->contentid;
+    }
+
+    /**
+     * @param int $contentId
+     */
+    public function setContentId($contentId)
+    {
+        $this->contentid = $contentId;
+    }
+
+    /**
+     * @return string
+     */
+    public function getMutationType()
+    {
+        return $this->mutation_type;
+    }
+
+    /**
+     * @param string $mutationType
+     */
+    public function setMutationType($mutationType)
+    {
+        $this->mutation_type = $mutationType;
+    }
+
+    /**
+     * @return array
+     */
+    public function getDiff()
+    {
+        return $this->diff;
+    }
+
+    /**
+     * @param array $diff
+     */
+    public function setDiff($diff)
+    {
+        $this->diff = $diff;
+    }
+
+    /**
+     * @return string
+     */
+    public function getComment()
+    {
+        return $this->comment;
+    }
+
+    /**
+     * @param string $comment
+     */
+    public function setComment($comment)
+    {
+        $this->comment = $comment;
+    }
+
+    /**
+     * Allows injecting the metadata configuration into the record so output can be built based on variable types.
+     *
+     * @param ClassMetadata $config
+     */
+    public function setContentTypeMeta(ClassMetadata $config)
+    {
+        $this->contentTypeMeta = $config;
+    }
 
     /**
      * Get changed fields.
      *
+     * @param array $contentType
+     *
      * @return array
      */
-    public function getChangedFields()
+    public function getChangedFields(array $contentType)
     {
-        $changedfields = [];
+        $changedFields = [];
 
         if (empty($this->diff)) {
-            return $changedfields;
+            return $changedFields;
         }
 
-        // Get the contenttype that we're dealing with
-        $fields = $this->contentTypeMeta['fields'];
+        // Get the ContentType that we're dealing with
+        $fields = $contentType['fields'];
+
         $hash = [
             'html'        => 'fieldText',
             'markdown'    => 'fieldText',
@@ -58,13 +193,19 @@ class LogChange extends Entity
             'imagelist'   => 'fieldList',
             'geolocation' => 'fieldGeolocation',
             'image'       => 'fieldImage',
+            'oembed'      => 'fieldVideo',
             'select'      => 'fieldSelect',
             'video'       => 'fieldVideo',
         ];
 
         foreach ($this->diff as $key => $value) {
-            $changedfields[$key] = [
-                'type'   => 'normal',
+            if (!isset($fields[$key])) {
+                continue;
+            }
+
+            $type = $fields[$key]['type'];
+            $changedFields[$key] = [
+                'type'   => $type,
                 'label'  => empty($fields[$key]['label']) ? $key : $fields[$key]['label'],
                 'before' => [
                     'raw'    => $value[0],
@@ -76,13 +217,15 @@ class LogChange extends Entity
                 ],
             ];
 
-            if (isset($hash[$fields[$key]['type']])) {
-                $func = $hash[$fields[$key]['type']];
-                $changedfields[$key] = array_merge($changedfields[$key], $this->{$func}($key, $value, $fields));
+            /** @var string $type */
+            $type = $fields[$key]['type'];
+            if (isset($hash[$type])) {
+                $func = $hash[$type];
+                $changedFields[$key] = array_merge($changedFields[$key], $this->{$func}($key, $value, $fields));
             }
         }
 
-        return $changedfields;
+        return $changedFields;
     }
 
     /**
@@ -112,8 +255,8 @@ class LogChange extends Entity
     {
         return [
             'type'   => $fields[$key]['type'],
-            'before' => ['render' => json_decode($value[0], true)],
-            'after'  => ['render' => json_decode($value[1], true)],
+            'before' => ['render' => Json::parse($value[0])],
+            'after'  => ['render' => Json::parse($value[1])],
         ];
     }
 
@@ -128,8 +271,8 @@ class LogChange extends Entity
      */
     private function fieldGeolocation($key, $value, array $fields)
     {
-        $before = json_decode($value[0], true);
-        $after  = json_decode($value[1], true);
+        $before = Json::parse($value[0]);
+        $after = Json::parse($value[1]);
 
         return [
             'type'   => $fields[$key]['type'],
@@ -163,8 +306,8 @@ class LogChange extends Entity
      */
     private function fieldImage($key, $value, array $fields)
     {
-        $before = json_decode($value[0], true);
-        $after  = json_decode($value[1], true);
+        $before = Json::parse($value[0]);
+        $after = Json::parse($value[1]);
 
         return [
             'type'   => $fields[$key]['type'],
@@ -184,6 +327,51 @@ class LogChange extends Entity
     }
 
     /**
+     * Compile changes for oembed field types.
+     *
+     * @param string $key
+     * @param string $value
+     * @param array  $fields
+     *
+     * @return array
+     */
+    private function fieldOembed($key, $value, array $fields)
+    {
+        $before = Json::parse($value[0]);
+        $after = Json::parse($value[1]);
+
+        return [
+            'type'   => $fields[$key]['type'],
+            'before' => [
+                'render' => [
+                    'url'           => $before['url'],
+                    'type'          => $before['type'],
+                    'author_name'   => $before['author_name'],
+                    'author_url'    => $before['author_url'],
+                    'provider_name' => $before['provider_name'],
+                    'provider_url'  => $before['provider_url'],
+                    'height'        => $before['height'],
+                    'width'         => $before['width'],
+                    'html'          => $before['html'],
+                ],
+            ],
+            'after'  => [
+                'render' => [
+                    'url'           => $after['url'],
+                    'type'          => $after['type'],
+                    'author_name'   => $after['author_name'],
+                    'author_url'    => $after['author_url'],
+                    'provider_name' => $after['provider_name'],
+                    'provider_url'  => $after['provider_url'],
+                    'height'        => $after['height'],
+                    'width'         => $after['width'],
+                    'html'          => $after['html'],
+                ],
+            ],
+        ];
+    }
+
+    /**
      * Compile changes for select field types.
      *
      * @param string $key
@@ -195,11 +383,11 @@ class LogChange extends Entity
     private function fieldSelect($key, $value, array $fields)
     {
         if (isset($fields[$key]['multiple']) && $fields[$key]['multiple']) {
-            $before = json_decode($value[0], true);
-            $after  = json_decode($value[1], true);
+            $before = $value[0];
+            $after = $value[1];
         } else {
             $before = $value[0];
-            $after  = $value[1];
+            $after = $value[1];
         }
 
         return [
@@ -220,8 +408,8 @@ class LogChange extends Entity
      */
     private function fieldVideo($key, $value, array $fields)
     {
-        $before = json_decode($value[0], true);
-        $after  = json_decode($value[1], true);
+        $before = Json::parse($value[0]);
+        $after = Json::parse($value[1]);
 
         return [
             'type'   => $fields[$key]['type'],

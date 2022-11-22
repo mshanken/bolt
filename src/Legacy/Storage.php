@@ -3,22 +3,27 @@
 namespace Bolt\Legacy;
 
 use Bolt;
+use Bolt\Collection\Arr;
+use Bolt\Controller\Zone;
 use Bolt\Events\StorageEvent;
 use Bolt\Events\StorageEvents;
 use Bolt\Exception\StorageException;
-use Bolt\Helpers\Arr;
 use Bolt\Helpers\Html;
 use Bolt\Helpers\Str;
 use Bolt\Pager;
+use Bolt\Storage\Entity\FieldValue;
+use Bolt\Storage\Field\Collection\RepeatingFieldCollection;
 use Bolt\Translation\Translator as Trans;
 use Doctrine\DBAL\Connection as DoctrineConn;
-use Doctrine\DBAL\DBALException;
 use Doctrine\DBAL\Platforms\PostgreSqlPlatform;
-use Doctrine\DBAL\Query\QueryBuilder;
+use Exception;
 use Silex\Application;
-use Symfony\Component\HttpFoundation\Request;
-use utilphp\util;
 
+/**
+ * Legacy Storage class.
+ *
+ * @deprecated Deprecated since 3.0, to be removed in 4.0.
+ */
 class Storage
 {
     /** @var array */
@@ -38,9 +43,6 @@ class Storage
 
     /** @var bool Test to indicate if we're inside a dispatcher. */
     private $inDispatcher = false;
-
-    /** @var array */
-    protected static $pager = [];
 
     public function __construct(Application $app)
     {
@@ -88,174 +90,43 @@ class Storage
      * Only fill the contenttypes passed as parameters
      * If the parameters is empty, only fill empty tables
      *
-     * @see preFillSingle
+     * @see \Bolt\Storage\Database\\Prefill
      *
-     * @param array $contenttypes
+     * @param array $contentTypes
      *
      * @return string
      */
-    public function preFill($contenttypes = [])
+    public function preFill($contentTypes = [])
     {
+        if (empty($contentTypes)) {
+            $contentTypes = $this->app['config']->get('contenttypes');
+            $contentTypeNames = array_keys($contentTypes);
+        } else {
+            $contentTypeNames = (array) $contentTypes;
+        }
+
+        /** @var \Bolt\Storage\Database\Prefill\Builder $builder */
+        $builder = $this->app['prefill.builder'];
+        $results = $builder->build($contentTypeNames, 5);
+
         $output = '';
-
-        // get a list of images.
-        $this->images = $this->app['filesystem']->search('*', 'jpg,jpeg,png');
-
-        $emptyOnly = empty($contenttypes);
-
-        foreach ($this->app['config']->get('contenttypes') as $key => $contenttype) {
-            $tablename = $this->getContenttypeTablename($contenttype);
-            if ($emptyOnly && $this->hasRecords($tablename)) {
-                $output .= Trans::__('Skipped <tt>%key%</tt> (already has records)', ['%key%' => $key]) . "<br>\n";
-                continue;
-            } elseif (!in_array($key, $contenttypes) && !$emptyOnly) {
-                $output .= Trans::__('Skipped <tt>%key%</tt> (not checked)', ['%key%' => $key]) . "<br>\n";
-                continue;
-            }
-
-            $amount = isset($contenttype['prefill']) ? $contenttype['prefill'] : 5;
-
-            for ($i = 1; $i <= $amount; $i++) {
-                $output .= $this->preFillSingle($key, $contenttype);
+        foreach ($results->get('created') as $contentTypeName => $titles) {
+            foreach ($titles as $title) {
+                $output .= Trans::__(
+                    "Added to <tt>%key%</tt> '%title%'",
+                    ['%key%' => $contentTypeName, '%title%' => $title['title']]
+                );
+                $output .= "<br>\n";
             }
         }
-
-        $output .= "<br>\n\n" . Trans::__('Done!');
+        foreach ($results->get('warnings') as $warnings) {
+            $output .= $warnings;
+        }
+        foreach ($results->get('errors') as $errors) {
+            $output .= $errors;
+        }
 
         return $output;
-    }
-
-    /**
-     * Add a record with dummy content.
-     *
-     * @see preFill
-     *
-     * @param $key
-     * @param $contenttype
-     *
-     * @return string
-     */
-    private function preFillSingle($key, $contenttype)
-    {
-        $content = [];
-        $title = '';
-
-        $content['contenttype'] = $key;
-        $content['datecreated'] = date('Y-m-d H:i:s', time() - rand(0, 365 * 24 * 60 * 60));
-        $content['datepublish'] = date('Y-m-d H:i:s', time() - rand(0, 365 * 24 * 60 * 60));
-        $content['datedepublish'] = null;
-
-        $username = array_rand($this->app['users']->getUsers(), 1);
-        $user = $this->app['users']->getUser($username);
-
-        $content['ownerid'] = $user['id'];
-
-        $content['status'] = 'published';
-
-        foreach ($contenttype['fields'] as $field => $values) {
-            switch ($values['type']) {
-                case 'text':
-                    $content[$field] = trim(strip_tags($this->app['prefill']->get('/1/veryshort')));
-                    if (empty($title)) {
-                        $title = $content[$field];
-                    }
-                    break;
-                case 'image':
-                    // Get a random image
-                    if (!empty($this->images)) {
-                        $content[$field]['file'] = $this->images[array_rand($this->images)];
-                    }
-                    break;
-                case 'html':
-                case 'textarea':
-                case 'markdown':
-                    if (in_array($field, ['teaser', 'introduction', 'excerpt', 'intro'])) {
-                        $params = '/medium/decorate/link/1';
-                    } else {
-                        $params = '/medium/decorate/link/ol/ul/3';
-                    }
-
-                    $content[$field] = trim($this->app['prefill']->get($params));
-                    if ($values['type'] == "markdown") {
-                        $content[$field] = strip_tags($content[$field]);
-                    }
-                    break;
-                case 'datetime':
-                    $content[$field] = date('Y-m-d H:i:s', time() - rand(-365 * 24 * 60 * 60, 365 * 24 * 60 * 60));
-                    break;
-                case 'date':
-                    $content[$field] = date('Y-m-d', time() - rand(-365 * 24 * 60 * 60, 365 * 24 * 60 * 60));
-                    break;
-                case 'checkbox':
-                    $content[$field] = rand(0, 1);
-                    break;
-                case 'float':
-                case 'number': // number is deprecated
-                case 'integer':
-                    $content[$field] = rand(-1000, 1000) + (rand(0, 1000) / 1000);
-                    break;
-            }
-        }
-
-        $content['title'] = rtrim($content['title'], '.,;:');
-        $content['slug'] = $this->app['slugify']->slugify($content['title']);
-
-        $contentobject = $this->getContentObject($contenttype);
-        $contentobject->setValues($content);
-
-        if (!empty($contenttype['taxonomy'])) {
-            foreach ($contenttype['taxonomy'] as $taxonomy) {
-                if ($this->app['config']->get('taxonomy/' . $taxonomy . '/options')) {
-                    $options = $this->app['config']->get('taxonomy/' . $taxonomy . '/options');
-                    $key = array_rand($options);
-                    $contentobject->setTaxonomy($taxonomy, $key, $options[$key], rand(1, 1000));
-                }
-                if ($this->app['config']->get('taxonomy/' . $taxonomy . '/behaves_like') == 'tags') {
-                    $contentobject->setTaxonomy($taxonomy, $this->getSomeRandomTags(5));
-                }
-            }
-        }
-
-        $this->saveContent($contentobject);
-
-        $output = Trans::__(
-            "Added to <tt>%key%</tt> '%title%'",
-            ['%key%' => $key, '%title%' => $contentobject->getTitle()]
-        ) . "<br>\n";
-
-        return $output;
-    }
-
-    /**
-     * Get an array of random tags
-     *
-     * @param integer $num
-     *
-     * @return string[]
-     */
-    private function getSomeRandomTags($num = 5)
-    {
-        $tags = ['action', 'adult', 'adventure', 'alpha', 'animals', 'animation', 'anime', 'architecture', 'art',
-            'astronomy', 'baby', 'batshitinsane', 'biography', 'biology', 'book', 'books', 'business', 'business',
-            'camera', 'cars', 'cats', 'cinema', 'classic', 'comedy', 'comics', 'computers', 'cookbook', 'cooking',
-            'crime', 'culture', 'dark', 'design', 'digital', 'documentary', 'dogs', 'drama', 'drugs', 'education',
-            'environment', 'evolution', 'family', 'fantasy', 'fashion', 'fiction', 'film', 'fitness', 'food',
-            'football', 'fun', 'gaming', 'gift', 'health', 'hip', 'historical', 'history', 'horror', 'humor',
-            'illustration', 'inspirational', 'internet', 'journalism', 'kids', 'language', 'law', 'literature', 'love',
-            'magic', 'math', 'media', 'medicine', 'military', 'money', 'movies', 'mp3', 'murder', 'music', 'mystery',
-            'news', 'nonfiction', 'nsfw', 'paranormal', 'parody', 'philosophy', 'photography', 'photos', 'physics',
-            'poetry', 'politics', 'post-apocalyptic', 'privacy', 'psychology', 'radio', 'relationships', 'research',
-            'rock', 'romance', 'rpg', 'satire', 'science', 'sciencefiction', 'scifi', 'security', 'self-help',
-            'series', 'software', 'space', 'spirituality', 'sports', 'story', 'suspense', 'technology', 'teen',
-            'television', 'terrorism', 'thriller', 'travel', 'tv', 'uk', 'urban', 'us', 'usa', 'vampire', 'video',
-            'videogames', 'war', 'web', 'women', 'world', 'writing', 'wtf', 'zombies',
-        ];
-
-        shuffle($tags);
-
-        $picked = array_slice($tags, 0, $num);
-
-        return $picked;
     }
 
     /**
@@ -570,7 +441,7 @@ class Storage
 
         if (!$this->isValidColumn($field, $contenttype)) {
             $error = Trans::__('contenttypes.generic.invalid-field', ['%field%' => $field, '%contenttype%' => $contenttype]);
-            $this->app['logger.flash']->error($error);
+            $this->app['logger.flash']->danger($error);
 
             return false;
         }
@@ -604,6 +475,10 @@ class Storage
 
     /**
      * Decode search query into searchable parts.
+     *
+     * @param string $q
+     *
+     * @return array
      */
     private function decodeSearchQuery($q)
     {
@@ -626,6 +501,7 @@ class Storage
             'valid' => count($words) > 0,
             'in_q'  => $q,
             'use_q' => implode(' ', $words),
+            'sanitized_q' => strip_tags($q),
             'words' => $words,
         ];
     }
@@ -639,8 +515,9 @@ class Storage
      * @param       $contenttype
      * @param       $fields
      * @param array $filter
+     * @param bool  $implode
      *
-     * @return \Bolt\Legacy\Content
+     * @return Content
      */
     private function searchSingleContentType($query, $contenttype, $fields, array $filter = null, $implode = false)
     {
@@ -658,7 +535,8 @@ class Storage
         foreach ($fields as $field => $fieldconfig) {
             if (in_array($fieldconfig['type'], $searchableTypes)) {
                 foreach ($query['words'] as $word) {
-                    $fieldsWhere[] = sprintf('%s.%s LIKE %s', $table, $field, $this->app['db']->quote('%' . $word . '%'));
+                    // Build the LIKE, lowering the searched field to cover case-sensitive database systems
+                    $fieldsWhere[] = sprintf('LOWER(%s.%s) LIKE LOWER(%s)', $table, $field, $this->app['db']->quote('%' . $word . '%'));
                 }
             }
         }
@@ -715,7 +593,7 @@ class Storage
         $results = $this->app['db']->fetchAll($select);
 
         if (!empty($results)) {
-            $ids = implode(' || ', util::array_pluck($results, 'id'));
+            $ids = implode(' || ', Arr::column($results, 'id'));
 
             $results = $this->getContent($contenttype, ['id' => $ids, 'returnsingle' => false]);
 
@@ -926,8 +804,8 @@ class Storage
         $page = !empty($parameters['page']) ? $parameters['page'] : 1;
 
         // If we're allowed to use pagination, use the 'page' parameter.
-        if (!empty($parameters['paging']) && $this->app->raw('request') instanceof Request) {
-            $page = $this->app['request']->get('page', $page);
+        if (!empty($parameters['paging']) && $this->app['request_stack']->getCurrentRequest() !== null) {
+            $page = $this->app['pager']->getPager();
         }
 
         $queryparams = "";
@@ -972,17 +850,19 @@ class Storage
         // Make sure all content has their taxonomies and relations
         $this->getTaxonomy($content);
         $this->getRelation($content);
+        $this->getRepeaters($content);
 
         // Set up the $pager array with relevant values.
         $rowcount = $this->app['db']->executeQuery($pagerquery)->fetch();
-        $pager = [
-            'for'          => 'search',
-            'count'        => $rowcount['count'],
-            'totalpages'   => ceil($rowcount['count'] / $limit),
-            'current'      => $page,
-            'showing_from' => ($page - 1) * $limit + 1,
-            'showing_to'   => ($page - 1) * $limit + count($content),
-        ];
+
+        /** @var \Bolt\Pager\PagerManager $manager */
+        $manager = $this->app['pager'];
+        $manager->createPager('search')
+            ->setCount($rowcount['count'])
+            ->setTotalpages(ceil($rowcount['count'] / $limit))
+            ->setCurrent($page)
+            ->setShowingFrom(($page - 1) * $limit + 1)
+            ->setShowingTo(($page - 1) * $limit + count($content));
 
         return $content;
     }
@@ -998,9 +878,9 @@ class Storage
      *
      * @param string $taxonomyslug
      * @param string $name
-     * @param string $parameters
+     * @param array  $parameters
      *
-     * @return array
+     * @return array|false
      */
     public function getContentByTaxonomy($taxonomyslug, $name, $parameters = [])
     {
@@ -1028,16 +908,19 @@ class Storage
         // Make the query for the pager.
         $pagerquery = sprintf('SELECT COUNT(*) AS count FROM %s %s', $tablename, $where);
 
+        $orderby = (array_key_exists('has_sortorder', $taxonomytype)
+            && $taxonomytype['has_sortorder'] === true) ? 'sortorder' : 'id';
+
         // Sort on either 'ascending' or 'descending'
         // Make sure we set the order.
         $order = 'ASC';
-        $taxonomysort = strtoupper($this->app['config']->get('general/taxonomy_sort'));
+        $taxonomysort = strtoupper($this->app['config']->get('theme/taxonomy_sort') ?: $this->app['config']->get('general/taxonomy_sort'));
         if ($taxonomysort == 'DESC') {
             $order = 'DESC';
         }
 
         // Add the limit
-        $query = sprintf('SELECT * FROM %s %s ORDER BY id %s', $tablename, $where, $order);
+        $query = sprintf('SELECT * FROM %s %s ORDER BY %s %s', $tablename, $where, $orderby, $order);
         $query = $this->app['db']->getDatabasePlatform()->modifyLimitQuery($query, $limit, ($page - 1) * $limit);
 
         $taxorows = $this->app['db']->fetchAll($query);
@@ -1060,156 +943,35 @@ class Storage
 
         // Set up the $pager array with relevant values.
         $rowcount = $this->app['db']->executeQuery($pagerquery)->fetch();
-        $pager = [
-            'for'          => $taxonomytype['singular_slug'] . '_' . $slug,
-            'count'        => $rowcount['count'],
-            'totalpages'   => ceil($rowcount['count'] / $limit),
-            'current'      => $page,
-            'showing_from' => ($page - 1) * $limit + 1,
-            'showing_to'   => ($page - 1) * $limit + count($taxorows),
-        ];
 
-        $this->app['storage']->setPager($taxonomytype['singular_slug'] . '_' . $slug, $pager);
+        $pagefor = $taxonomytype['singular_slug'].'_'.$slug;
+
+        /** @var \Bolt\Pager\PagerManager $manager */
+        $manager = $this->app['pager'];
+        $manager->createPager($pagefor)
+            ->setCount($rowcount['count'])
+            ->setTotalpages(ceil($rowcount['count'] / $limit))
+            ->setCurrent($page)
+            ->setShowingFrom(($page - 1) * $limit + 1)
+            ->setShowingTo(($page - 1) * $limit + count($taxorows));
 
         return $content;
     }
 
     /**
-     * Check (and update) any records that need to be updated from "timed" to "published".
-     *
-     * @param array $contenttype
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     * @see        \Bolt\Storage\EventProcessor\TimedRecord::publishTimedRecords()
      */
-    public function publishTimedRecords($contenttype)
+    public function publishTimedRecords()
     {
-        // We need to do this only once per contenttype, max.
-        if (isset($this->checkedfortimed['publish-' . $contenttype['slug']])) {
-            return;
-        }
-
-        $this->timedHandleRecords($contenttype['slug'], 'publish');
     }
 
     /**
-     * Check (and update) any records that need to be updated from "published" to "held".
-     *
-     * @param array $contenttype
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     * @see        \Bolt\Storage\EventProcessor\TimedRecord::holdExpiredRecords()
      */
-    public function depublishExpiredRecords($contenttype)
+    public function depublishExpiredRecords()
     {
-        // We need to do this only once per contenttype, max.
-        if (isset($this->checkedfortimed['depublish-' . $contenttype['slug']])) {
-            return;
-        }
-
-        $this->timedHandleRecords($contenttype['slug'], 'depublish');
-    }
-
-    /**
-     * Handle scheduled publishing/de-publishing of records.
-     *
-     * @param string $contenttypeSlug
-     * @param string $type
-     */
-    private function timedHandleRecords($contenttypeSlug, $type)
-    {
-        $this->checkedfortimed[$type . '-' . $contenttypeSlug] = true;
-        $tablename = $this->getContenttypeTablename($contenttypeSlug);
-        if ($this->tableExists($tablename) === false) {
-            return;
-        }
-
-        try {
-            // Check for record that need to be published/de-published
-            $recordIds = $this->timedListRecords($contenttypeSlug, $type);
-            if (empty($recordIds)) {
-                return;
-            }
-
-            /** @var QueryBuilder $query */
-            $query = $this->app['db']->createQueryBuilder()
-                ->update($tablename)
-                ->set('status', ':newstatus')
-                ->set('datechanged', ':datechanged')
-                ->setParameter('datechanged', date('Y-m-d H:i:s'));
-
-            $this->timedWhere($query, $type);
-
-            $query->execute();
-        } catch (DBALException $e) {
-            $message = "Timed $type of records for $contenttypeSlug failed: " . $e->getMessage();
-            $this->app['logger.system']->critical($message, ['event' => 'exception', 'exception' => $e]);
-
-            return;
-        }
-
-        // If there are no listeners for this event, we can safely return early.
-        if (! $this->app['dispatcher']->hasListeners("timed.$type")) {
-            return;
-        }
-
-        try {
-            foreach ($recordIds as $recordId) {
-                $content = $this->getContent($contenttypeSlug . '/' . $recordId['id'], ['hydrate' => false, 'returnsingle' => true]);
-
-                $event = new StorageEvent($content, ['contenttype' => $contenttypeSlug, 'create' => false]);
-                $this->app['dispatcher']->dispatch("timed.$type", $event);
-            }
-        } catch (\Exception $e) {
-            $this->app['logger.system']->critical("Dispatch handling failed for $contenttypeSlug.", ['event' => 'exception', 'exception' => $e]);
-        }
-    }
-
-    /**
-     * Set the QueryBuilder where parameters.
-     *
-     * @param QueryBuilder $query
-     * @param string       $type
-     *
-     * @return array|false
-     */
-    private function timedListRecords($contenttypeSlug, $type)
-    {
-        $tablename = $this->getContenttypeTablename($contenttypeSlug);
-
-        /** @var QueryBuilder $query */
-        $query = $this->app['db']->createQueryBuilder()
-            ->select('id')
-            ->from($tablename)
-            ->set('status', ':newstatus')
-            ->set('datechanged', ':datechanged')
-            ->setParameter('datechanged', date('Y-m-d H:i:s'));
-
-        $this->timedWhere($query, $type);
-
-        return $query->execute()->fetchAll();
-    }
-
-    /**
-     * Set the QueryBuilder where parameters.
-     *
-     * @param QueryBuilder $query
-     * @param string       $type
-     */
-    private function timedWhere(QueryBuilder $query, $type)
-    {
-        if ($type === 'publish') {
-            $query
-                ->where('status = :oldstatus')
-                ->andWhere('datepublish < :currenttime')
-                ->setParameter('oldstatus', 'timed')
-                ->setParameter('newstatus', 'published')
-                ->setParameter('currenttime', new \DateTime(), \Doctrine\DBAL\Types\Type::DATETIME);
-        } else {
-            $query
-                ->where('status = :oldstatus')
-                ->andWhere('datedepublish <= :currenttime')
-                ->andWhere('datedepublish > :zeroday')
-                ->andWhere('datechanged < datedepublish')
-                ->setParameter('oldstatus', 'published')
-                ->setParameter('newstatus', 'held')
-                ->setParameter('zeroday', '1900-01-01 00:00:01')
-                ->setParameter('currenttime', new \DateTime(), \Doctrine\DBAL\Types\Type::DATETIME);
-        }
     }
 
     /**
@@ -1220,6 +982,8 @@ class Storage
      * @param array|string|null $inParameters
      *
      * @see $this->decodeContentQuery()
+     *
+     * @return array
      */
     private function organizeQueryParameters($inParameters = null)
     {
@@ -1295,7 +1059,10 @@ class Storage
             // like 'entry/12' or '/page/12345'
             $decoded['contenttypes'] = $this->decodeContentTypesFromText($match[1]);
             $decoded['return_single'] = true;
-            $ctypeParameters['id'] = $match[2];
+            // if allow_numeric_slug option is set on contenttype, interpret number as slug instead of id
+            $contenttype = $this->getContentType($decoded['contenttypes'][0]);
+            $field = ($contenttype['allow_numeric_slugs'] === true ? 'slug' : 'id');
+            $ctypeParameters[$field] = $match[2];
         } elseif (preg_match('#^/?([a-z0-9_(\),-]+)/search(/([0-9]+))?$#i', $textquery, $match)) {
             // like 'page/search or '(entry,page)/search'
             $decoded['contenttypes'] = $this->decodeContentTypesFromText($match[1]);
@@ -1322,8 +1089,8 @@ class Storage
         } elseif (preg_match('#^/?([a-z0-9_-]+)/random/([0-9]+)$#i', $textquery, $match)) {
             // like 'page/random/4'
             $decoded['contenttypes'] = $this->decodeContentTypesFromText($match[1]);
-            $dboptions = $this->app['config']->getDBoptions();
-            $metaParameters['order'] = $dboptions['randomfunction']; // 'RAND()' or 'RANDOM()'
+            $dboptions = $this->app['config']->get('general/database');
+            $metaParameters['order'] = isset($dboptions['randomfunction']) ? $dboptions['randomfunction'] : null; // 'RAND()' or 'RANDOM()'
             if (!isset($metaParameters['limit'])) {
                 $metaParameters['limit'] = $match[2];
             }
@@ -1337,8 +1104,10 @@ class Storage
 
         // When using from the frontend, we assume (by default) that we only want published items,
         // unless something else is specified explicitly
-        if (isset($this->app['end']) && $this->app['end'] != "backend" && empty($ctypeParameters['status'])) {
-            $ctypeParameters['status'] = "published";
+        $request = $this->app['request_stack']->getCurrentRequest();
+        $isFrontend = $request ? Zone::isFrontend($request) : true;
+        if ($isFrontend && empty($ctypeParameters['status'])) {
+            $ctypeParameters['status'] = 'published';
         }
 
         if (isset($metaParameters['returnsingle'])) {
@@ -1482,7 +1251,8 @@ class Storage
 
         // $decoded['contettypes'] gotten here
         // get page nr. from url if has
-        $metaParameters['page'] = $this->decodePageParameter(implode('_', $decoded['contenttypes']), $inParameters);
+
+        $metaParameters['page'] = $this->app['pager']->getCurrentPage(implode('_', $decoded['contenttypes']));
 
         $this->prepareDecodedQueryForUse($decoded, $metaParameters, $ctypeParameters);
 
@@ -1636,6 +1406,7 @@ class Storage
      * @param array  $inParameters
      *
      * @return mixed Page number in context
+     * @deprecated Not used in core anymore
      */
     protected function decodePageParameter($context = '', $inParameters = null)
     {
@@ -1674,6 +1445,7 @@ class Storage
             // Make sure all content has their taxonomies and relations
             $this->getTaxonomy($objects);
             $this->getRelation($objects);
+            $this->getRepeaters($objects);
         }
 
         return $objects;
@@ -1701,7 +1473,7 @@ class Storage
             $limit = $decoded['parameters']['limit'];
         }
 
-        if ($decoded['parameters']['paging'] === true && isset($decoded['parameters']['page'])) {
+        if (isset($decoded['parameters']['paging']) && ($decoded['parameters']['paging'] === true) && isset($decoded['parameters']['page'])) {
             // Pagenumbers are one-based, not zero-based.
             $offset = $limit * ($decoded['parameters']['page'] - 1);
         }
@@ -1877,10 +1649,10 @@ class Storage
 
         // Return content
         if ($decoded['return_single']) {
-            if (util::array_first_key($results)) {
+            if (count($results) > 0) {
                 $this->app['stopwatch']->stop('bolt.getcontent');
 
-                return util::array_first($results);
+                return reset($results);
             }
 
             if ($logNotFound) {
@@ -1898,16 +1670,16 @@ class Storage
         // Set up the $pager array with relevant values, but only if we requested paging.
         if (isset($decoded['parameters']['paging'])) {
             $pagerName = implode('_', $decoded['contenttypes']);
-            $pager = [
-                'for'          => $pagerName,
-                'count'        => $totalResults,
-                'totalpages'   => ceil($totalResults / $decoded['parameters']['limit']),
-                'current'      => $decoded['parameters']['page'],
-                'showing_from' => ($decoded['parameters']['page'] - 1) * $decoded['parameters']['limit'] + 1,
-                'showing_to'   => ($decoded['parameters']['page'] - 1) * $decoded['parameters']['limit'] + count($results),
-            ];
-            $this->setPager($pagerName, $pager);
-            $this->app['twig']->addGlobal('pager', $this->getPager());
+
+            /** @var \Bolt\Pager\PagerManager $manager */
+            $manager = $this->app['pager'];
+            $pager = $manager->createPager($pagerName)
+                ->setCount($totalResults)
+                ->setTotalpages(ceil($totalResults / $decoded['parameters']['limit']))
+                ->setCurrent($decoded['parameters']['page'])
+                ->setShowingFrom(($decoded['parameters']['page'] - 1) * $decoded['parameters']['limit'] + 1)
+                ->setShowingTo(($decoded['parameters']['page'] - 1) * $decoded['parameters']['limit'] + count($results));
+            // NOTE: The pager global addition has been removed from here
         }
 
         $this->app['stopwatch']->stop('bolt.getcontent');
@@ -2027,7 +1799,7 @@ class Storage
         $totalOrderByElements = count($separatedOrders);
 
         foreach ($separatedOrders as $index => $name) {
-            list($name, $asc) = $this->getSortOrder(trim($name));
+            list($name, $asc) = $this->getSortOrder($name);
 
             // If we don't have a name, we can't determine a sortorder.
             if (empty($name)) {
@@ -2093,7 +1865,7 @@ class Storage
      */
     protected function isMultiOrderQuery($order)
     {
-        return strpos($order, ',') !== false;
+        return (is_string($order) && (strpos($order, ',') !== false));
     }
 
     /**
@@ -2111,7 +1883,7 @@ class Storage
             return false;
         }
 
-        $parts = explode(' ', $name);
+        $parts = explode(' ', trim($name));
         $fieldname = $parts[0];
         $sort = 'ASC';
         if (isset($parts[1])) {
@@ -2244,25 +2016,35 @@ class Storage
      */
     public function getContentType($contenttypeslug)
     {
-        $contenttypeslug = $this->app['slugify']->slugify($contenttypeslug);
-
         // Return false if empty, can't find it.
         if (empty($contenttypeslug)) {
             return false;
         }
 
+        $contenttype = $this->app['config']->get('contenttypes/' . $contenttypeslug);
+
         // See if we've either given the correct contenttype, or try to find it by name or singular_name.
-        if ($this->app['config']->get('contenttypes/' . $contenttypeslug)) {
-            $contenttype = $this->app['config']->get('contenttypes/' . $contenttypeslug);
-        } else {
-            foreach ($this->app['config']->get('contenttypes') as $key => $ct) {
-                if (isset($ct['singular_slug']) && ($contenttypeslug == $ct['singular_slug'])) {
-                    $contenttype = $this->app['config']->get('contenttypes/' . $key);
-                    break;
-                }
-                if ($contenttypeslug == $this->app['slugify']->slugify($ct['singular_name']) || $contenttypeslug == $this->app['slugify']->slugify($ct['name'])) {
-                    $contenttype = $this->app['config']->get('contenttypes/' . $key);
-                    break;
+        if (!$contenttype) {
+            // Also check for the slugified version of the content type
+            $slugifiedContentType = $this->app['slugify']->slugify($contenttypeslug);
+            $contenttype = $this->app['config']->get('contenttypes/' . $slugifiedContentType);
+
+            if (!$contenttype) {
+                foreach ($this->app['config']->get('contenttypes') as $key => $ct) {
+                    if (
+                        (isset($ct['slug']) &&
+                            (($contenttypeslug === $ct['slug']) || ($slugifiedContentType === $ct['slug']))
+                        ) ||
+                        (isset($ct['singular_slug']) &&
+                            (($contenttypeslug === $ct['singular_slug']) || ($slugifiedContentType === $ct['singular_slug']))
+                        ) ||
+                        $slugifiedContentType === $this->app['slugify']->slugify($ct['name']) ||
+                        $slugifiedContentType === $this->app['slugify']->slugify($ct['singular_name'])
+                    ) {
+                        $contenttype = $ct;
+                        $contenttype['key'] = $key;
+                        break;
+                    }
                 }
             }
         }
@@ -2418,14 +2200,16 @@ class Storage
     {
         $tablename = $this->getTablename("taxonomy");
 
-        $ids = util::array_pluck($content, 'id');
+        $ids = Arr::column($content, 'id');
 
         if (empty($ids)) {
             return;
         }
 
         // Get the contenttype from first $content
-        $contenttype = $content[util::array_first_key($content)]->contenttype['slug'];
+        $first = reset($content);
+        $config = $first->contenttype;
+        $contenttype = (isset($config['key'])) ? $config['key'] : $config['slug'];
 
         $taxonomytypes = $this->app['config']->get('taxonomy');
 
@@ -2498,7 +2282,7 @@ class Storage
 
             if (!empty($currentvalues)) {
                 $currentsortorder = $currentvalues[0]['sortorder'];
-                $currentvalues = Arr::makeValuePairs($currentvalues, 'id', 'slug');
+                $currentvalues = Arr::column($currentvalues, 'slug', 'id');
             } else {
                 $currentsortorder = 0;
                 $currentvalues = [];
@@ -2594,14 +2378,15 @@ class Storage
     {
         $tablename = $this->getTablename("relations");
 
-        $ids = util::array_pluck($content, 'id');
+        $ids = Arr::column($content, 'id');
 
         if (empty($ids)) {
             return;
         }
 
         // Get the contenttype from first $content
-        $contenttype = $content[util::array_first_key($content)]->contenttype['slug'];
+        $first = reset($content);
+        $contenttype = isset($first->contenttype['key']) ? $first->contenttype['key'] : $first->contenttype['slug'];
 
         $query = sprintf(
             "SELECT * FROM %s WHERE from_contenttype=? AND from_id IN (?) ORDER BY id",
@@ -2627,6 +2412,42 @@ class Storage
         foreach ($rows as $row) {
             $content[$row['to_id']]->setRelation($row['from_contenttype'], $row['from_id']);
         }
+    }
+
+    public function getRepeaters($content)
+    {
+        $ids = Arr::column($content, 'id');
+
+        if (empty($ids)) {
+            return;
+        }
+
+        // Get the contenttype from first $content
+        $first = reset($content);
+        // Try with the key first, if this isn't available then fall back to using the slug
+        $contenttypeslug = (isset($first->contenttype['key'])) ? $first->contenttype['key'] : $first->contenttype['slug'] ;
+        $contenttype = $this->getContentType($contenttypeslug);
+        $repo = $this->app['storage']->getRepository(FieldValue::class);
+
+        foreach ($ids as $id) {
+            foreach ($contenttype['fields'] as $fieldkey => $field) {
+                if ($field['type'] == 'repeater' || $field['type'] == 'block') {
+                    $collection = new RepeatingFieldCollection($this->app['storage'], $field);
+                    try {
+                        $existingFields = $repo->getExistingFields($id, $contenttypeslug, $fieldkey) ?: [];
+                        foreach ($existingFields as $group => $ids) {
+                            $collection->addFromReferences($ids, $group);
+                        }
+                    } catch (Exception $e) {
+                    }
+                    $content[$id]->setValue($fieldkey, $collection);
+                }
+            }
+
+        }
+
+
+
     }
 
     /**
@@ -2760,7 +2581,7 @@ class Storage
      * @param string  $contenttypeslug
      * @param boolean $fulluri
      * @param boolean $allowempty
-     * @param boolean $slugfield
+     * @param string  $slugfield
      *
      * @return string
      */
@@ -2771,8 +2592,8 @@ class Storage
         $id = intval($id);
         $slug = $this->app['slugify']->slugify($title);
 
-        // Don't allow strictly numeric slugs.
-        if (is_numeric($slug)) {
+        // Don't allow strictly numeric slugs, unless allow_numeric_slugs options is set
+        if (is_numeric($slug) && $contenttype['allow_numeric_slugs'] !== true) {
             $slug = $contenttype['singular_slug'] . "-" . $slug;
         }
 
@@ -2915,12 +2736,20 @@ class Storage
     /**
      * Setter for pager storage element.
      *
+     * @deprecated Just for keep BC
+     *
      * @param string      $name
      * @param array|Pager $pager
+     *
+     * @return Storage
      */
     public function setPager($name, $pager)
     {
-        static::$pager[$name] = ($pager instanceof Pager) ? $pager : new Pager($pager, $this->app);
+        $pg = $this->app['pager']->createPager($name);
+
+        foreach ($pager as $prop => $value) {
+            $pg->$prop = $value;
+        }
 
         return $this;
     }
@@ -2928,25 +2757,24 @@ class Storage
     /**
      * Getter of a pager element. Pager can hold a paging snapshot map.
      *
+     * @deprecated Just for keep BC
+     *
      * @param string $name Optional name of a pager element. Whole pager map returns if no name given.
      *
      * @return array
      */
     public function &getPager($name = null)
     {
-        if ($name) {
-            if (array_key_exists($name, static::$pager)) {
-                return static::$pager[$name];
-            } else {
-                return false;
-            }
-        } else {
-            return static::$pager;
-        }
+        return $this->app['pager']
+            ->getPager($name)
+            ->asArray();
     }
 
+    /**
+     * @return bool
+     */
     public function isEmptyPager()
     {
-        return (count(static::$pager) === 0);
+        return $this->app['pager']->isEmptyPager();
     }
 }

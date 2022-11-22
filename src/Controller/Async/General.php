@@ -1,11 +1,19 @@
 <?php
+
 namespace Bolt\Controller\Async;
 
-use Bolt\Pager;
+use Bolt;
+use Bolt\Common\Exception\ParseException;
+use Bolt\Common\Json;
+use Bolt\Extension\ExtensionInterface;
+use Bolt\Filesystem;
+use Bolt\Storage\Entity;
+use Bolt\Storage\Repository;
 use GuzzleHttp\Exception\RequestException;
 use Silex\ControllerCollection;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * Async controller for general async routes.
@@ -26,14 +34,26 @@ class General extends AsyncBase
             ->bind('changelogrecord');
 
         $c->get('/dashboardnews', 'dashboardNews')
-            ->bind('dashboardnews');
+            ->bind('dashboardnews')
+            ->after(function (Request $request, Response $response) {
+                $response->setSharedMaxAge(3600);
+            })
+        ;
 
         $c->get('/lastmodified/{contenttypeslug}/{contentid}', 'lastModified')
             ->value('contentid', '')
-            ->bind('lastmodified');
+            ->bind('lastmodified')
+            ->after(function (Request $request, Response $response) {
+                $response->setSharedMaxAge(60);
+            })
+        ;
 
         $c->get('/latestactivity', 'latestActivity')
-            ->bind('latestactivity');
+            ->bind('latestactivity')
+            ->after(function (Request $request, Response $response) {
+                $response->setSharedMaxAge(3600);
+            })
+        ;
 
         $c->get('/makeuri', 'makeUri')
             ->bind('makeuri');
@@ -41,9 +61,21 @@ class General extends AsyncBase
         $c->get('/omnisearch', 'omnisearch')
             ->bind('omnisearch');
 
-        $c->get('/readme/{filename}', 'readme')
-            ->assert('filename', '.+')
-            ->bind('readme');
+        $c->get('/readme/{extension}', 'readme')
+            ->assert('extension', '.+')
+            ->bind('readme')
+            ->convert('extension', function ($id) {
+                $extension = $this->extensions()->get($id);
+                if ($extension === null) {
+                    throw new NotFoundHttpException('Not Found');
+                }
+
+                return $extension;
+            })
+            ->after(function (Request $request, Response $response) {
+                $response->setSharedMaxAge(180);
+            })
+        ;
 
         $c->get('/populartags/{taxonomytype}', 'popularTags')
             ->bind('populartags');
@@ -67,10 +99,10 @@ class General extends AsyncBase
     /**
      * Generate the change log box for a single record in edit.
      *
-     * @param string  $contenttype
-     * @param integer $contentid
+     * @param string $contenttype
+     * @param int    $contentid
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     public function changeLogRecord($contenttype, $contentid)
     {
@@ -81,9 +113,12 @@ class General extends AsyncBase
             'direction' => 'DESC',
         ];
 
+        /** @var Repository\LogChangeRepository $repo */
+        $repo = $this->storage()->getRepository(Entity\LogChange::class);
+
         $context = [
             'contenttype' => $contenttype,
-            'entries'     => $this->storage()->getRepository('Bolt\Storage\Entity\LogChange')->getChangeLogByContentType($contenttype, $options),
+            'entries'     => $repo->getChangeLogByContentType($contenttype, $options),
         ];
 
         return $this->render('@bolt/components/panel-change-record.twig', ['context' => $context]);
@@ -94,7 +129,7 @@ class General extends AsyncBase
      *
      * @param Request $request
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     public function dashboardNews(Request $request)
     {
@@ -104,13 +139,13 @@ class General extends AsyncBase
         // but Alerts can't.
         $context = [
             'alert'       => empty($news['alert']) ? null : $news['alert'],
+            'news'        => empty($news['news']) ? null : $news['news'],
             'information' => empty($news['information']) ? null : $news['information'],
             'error'       => empty($news['error']) ? null : $news['error'],
             'disable'     => $this->getOption('general/backend/news/disable'),
         ];
 
         $response = $this->render('@bolt/components/panel-news.twig', ['context' => $context]);
-        $response->setSharedMaxAge(3600)->setPublic();
 
         return $response;
     }
@@ -118,10 +153,10 @@ class General extends AsyncBase
     /**
      * Latest {contenttype} to show a small listing in the sidebars.
      *
-     * @param string       $contenttypeslug
-     * @param integer|null $contentid
+     * @param string   $contenttypeslug
+     * @param int|null $contentid
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     public function lastModified($contenttypeslug, $contentid = null)
     {
@@ -130,25 +165,26 @@ class General extends AsyncBase
 
         if ($contentLogEnabled) {
             return $this->getLastmodifiedByContentLog($contenttypeslug, $contentid);
-        } else {
-            return $this->getLastmodifiedSimple($contenttypeslug);
         }
+
+        return $this->getLastmodifiedSimple($contenttypeslug);
     }
 
     /**
      * Get the 'latest activity' for the dashboard.
      *
-     * @param Request $request
-     *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
-    public function latestActivity(Request $request)
+    public function latestActivity()
     {
         // Test/get page number
-        $param = Pager::makeParameterId('activity');
-        $page = ($request->query) ? $request->query->get($param, $request->query->get('page', 1)) : 1;
+        $page = $this->app['pager']->getCurrentPage('activity');
 
-        $change = $this->app['logger.manager']->getActivity('change', $page, 8);
+        if ($this->app['config']->get('general/changelog/enabled')) {
+            $change = $this->app['logger.manager']->getActivity('change', $page, 8);
+        } else {
+            $change = null;
+        }
         $system = $this->app['logger.manager']->getActivity('system', $page, 8, ['context' => ['authentication', 'security']]);
 
         $response = $this->render(
@@ -160,13 +196,12 @@ class General extends AsyncBase
                 ],
             ]
         );
-        $response->setPublic()->setSharedMaxAge(3600);
 
         return $response;
     }
 
     /**
-     * Generate a URI based on request parameters
+     * Generate a URI based on request parameters.
      *
      * @param Request $request
      *
@@ -221,7 +256,7 @@ class General extends AsyncBase
             ->select('name, COUNT(slug) AS count')
             ->from($table)
             ->where('taxonomytype = :taxonomytype')
-            ->groupBy('slug')
+            ->groupBy('name')
             ->orderBy('count', 'DESC')
             ->setMaxResults($request->query->getInt('limit', 20))
             ->setParameters([
@@ -247,29 +282,33 @@ class General extends AsyncBase
     /**
      * Render an extension's README.md file.
      *
-     * @param string $filename
+     * @param ExtensionInterface $extension
      *
-     * @return \Symfony\Component\HttpFoundation\Response
+     * @return Response
      */
-    public function readme($filename)
+    public function readme(ExtensionInterface $extension)
     {
-        $filename = $this->resources()->getPath('extensions/vendor/' . $filename);
-
-        // don't allow viewing of anything but "readme.md" files.
-        if (strtolower(basename($filename)) != 'readme.md') {
-            $this->abort(Response::HTTP_UNAUTHORIZED, 'Not allowed');
+        $file = null;
+        foreach (['README.md', 'readme.md'] as $possibleName) {
+            $file = $extension->getBaseDirectory()->getFile($possibleName);
+            if ($file->exists()) {
+                break;
+            }
         }
-        if (!is_readable($filename)) {
-            $this->abort(Response::HTTP_UNAUTHORIZED, 'Not readable');
+        if ($file === null) {
+            throw new NotFoundHttpException('Not Found');
         }
 
-        $readme = file_get_contents($filename);
+        try {
+            $readme = $file->read();
+        } catch (Filesystem\Exception\IOException $e) {
+            throw new NotFoundHttpException('Not Found');
+        }
 
         // Parse the field as Markdown, return HTML
         $html = $this->app['markdown']->text($readme);
 
         $response = new Response($html);
-        $response->setSharedMaxAge(180)->setPublic();
 
         return $response;
     }
@@ -301,135 +340,160 @@ class General extends AsyncBase
     }
 
     /**
-     * Get the news from either cache or Bolt HQ.
+     * Get the news from Bolt HQ (with caching).
      *
      * @param string $hostname
      *
-     * @return array|string
+     * @return array
      */
     private function getNews($hostname)
     {
-        /** @var \Bolt\Cache $cache */
-        $cache = $this->app['cache'];
-
         // Cached for two hours.
-        $news = $cache->fetch('dashboardnews');
-
-        // If not cached, get fresh news.
+        $news = $this->app['cache']->fetch('dashboardnews');
         if ($news !== false) {
             $this->app['logger.system']->info('Using cached data', ['event' => 'news']);
 
             return $news;
-        } else {
-            $source = $this->getOption('general/branding/news_source', 'http://news.bolt.cm/');
-            $curl = $this->getDashboardCurlOptions($hostname, $source);
-
-            $this->app['logger.system']->info('Fetching from remote server: ' . $source, ['event' => 'news']);
-
-            try {
-                $fetchedNewsData = $this->app['guzzle.client']->get($curl['url'], ['config' => ['curl' => $curl['options']]])->getBody(true);
-                if ($this->getOption('general/branding/news_variable')) {
-                    $newsVariable = $this->getOption('general/branding/news_variable');
-                    $fetchedNewsItems = json_decode($fetchedNewsData)->$newsVariable;
-                } else {
-                    $fetchedNewsItems = json_decode($fetchedNewsData);
-                }
-                if ($fetchedNewsItems) {
-                    $news = [];
-
-                    // Iterate over the items, pick the first news-item that
-                    // applies and the first alert we need to show
-                    $version = $this->app['bolt_version'];
-                    foreach ($fetchedNewsItems as $item) {
-                        $type = ($item->type === 'alert') ? 'alert' : 'information';
-                        if (!isset($news[$type])
-                            && (empty($item->target_version) || version_compare($item->target_version, $version, '>'))
-                        ) {
-                            $news[$type] = $item;
-                        }
-                    }
-
-                    $cache->save('dashboardnews', $news, 7200);
-                } else {
-                    $this->app['logger.system']->error('Invalid JSON feed returned', ['event' => 'news']);
-                }
-
-                return $news;
-            } catch (RequestException $e) {
-                $this->app['logger.system']->critical(
-                    'Error occurred during newsfeed fetch',
-                    ['event' => 'exception', 'exception' => $e]
-                );
-
-                return ['error' => ['type' => 'error', 'title' => 'Unable to fetch news!', 'teaser' => "<p>Unable to connect to $source</p>"]];
-            }
         }
+
+        // If not cached, get fresh news.
+        $news = $this->fetchNews($hostname);
+
+        $this->app['cache']->save('dashboardnews', $news, 7200);
+
+        return $news;
     }
 
     /**
-     * Get the cURL options.
+     * Get the news from Bolt HQ.
      *
      * @param string $hostname
-     * @param string $source
      *
      * @return array
      */
-    private function getDashboardCurlOptions($hostname, $source)
+    private function fetchNews($hostname)
     {
-        $driver = $this->app['db']->getDatabasePlatform()->getName();
+        $source = $this->getOption('general/branding/news_source', 'https://news.bolt.cm/');
+        $options = $this->fetchNewsOptions($hostname);
 
-        $url = sprintf(
-            '%s?v=%s&p=%s&db=%s&name=%s',
-            $source,
-            rawurlencode($this->app['bolt_version']),
-            phpversion(),
-            $driver,
-            base64_encode($hostname)
-        );
+        $this->app['logger.system']->info('Fetching from remote server: ' . $source, ['event' => 'news']);
 
-        // Standard option(s)
-        $options = [CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 10];
+        try {
+            $fetchedNewsData = (string) $this->app['guzzle.client']->get($source, $options)->getBody();
+        } catch (RequestException $e) {
+            $this->app['logger.system']->error(
+                'Error occurred during newsfeed fetch',
+                ['event' => 'exception', 'exception' => $e]
+            );
 
-        // Options valid if using a proxy
-        if ($this->getOption('general/httpProxy')) {
-            $proxies = [
-                CURLOPT_PROXY        => $this->getOption('general/httpProxy/host'),
-                CURLOPT_PROXYTYPE    => CURLPROXY_HTTP,
-                CURLOPT_PROXYUSERPWD => $this->getOption('general/httpProxy/user') . ':' .
-                $this->getOption('general/httpProxy/password'),
+            return [
+                'error' => [
+                    'type'   => 'error',
+                    'title'  => 'Unable to fetch news!',
+                    'teaser' => "<p>Unable to connect to $source</p>",
+                ],
             ];
         }
 
+        try {
+            $fetchedNewsItems = Json::parse($fetchedNewsData);
+        } catch (ParseException $e) {
+            // Just move on, a user-friendly notice is returned below.
+            $fetchedNewsItems = [];
+        }
+
+        $newsVariable = $this->getOption('general/branding/news_variable');
+        if ($newsVariable && array_key_exists($newsVariable, $fetchedNewsItems)) {
+            $fetchedNewsItems = $fetchedNewsItems[$newsVariable];
+        }
+
+        $news = [];
+
+        // Iterate over the items, pick the first news-item that
+        // applies and the first alert we need to show
+        foreach ($fetchedNewsItems as $item) {
+            $type = isset($item->type) ? $item->type : 'information';
+            if (!isset($news[$type])
+                && (empty($item->target_version) || Bolt\Version::compare($item->target_version, '>'))
+            ) {
+                $news[$type] = $item;
+            }
+        }
+
+        if ($news) {
+            return $news;
+        }
+        $this->app['logger.system']->error('Invalid JSON feed returned', ['event' => 'news']);
+
         return [
-            'url'     => $url,
-            'options' => !empty($proxies) ? array_merge($options, $proxies) : $options,
+            'error' => [
+                'type'   => 'error',
+                'title'  => 'Unable to fetch news!',
+                'teaser' => "<p>Invalid JSON feed returned by $source</p>",
+            ],
         ];
+    }
+
+    /**
+     * Get the guzzle options.
+     *
+     * @param string $hostname
+     *
+     * @return array
+     */
+    private function fetchNewsOptions($hostname)
+    {
+        $driver = $this->app['db']->getDatabasePlatform()->getName();
+
+        $options = [
+            'query' => [
+                'v'    => Bolt\Version::VERSION,
+                'p'    => PHP_VERSION,
+                'db'   => $driver,
+                'name' => $hostname,
+            ],
+            'connect_timeout' => 5,
+            'timeout'         => 10,
+        ];
+
+        if ($this->getOption('general/httpProxy')) {
+            $options['proxy'] = sprintf(
+                '%s:%s@%s',
+                $this->getOption('general/httpProxy/user'),
+                $this->getOption('general/httpProxy/password'),
+                $this->getOption('general/httpProxy/host')
+            );
+        }
+
+        return $options;
     }
 
     /**
      * Get last modified records from the content log.
      *
-     * @param string  $contenttypeslug
-     * @param integer $contentid
+     * @param string $contenttypeslug
+     * @param int    $contentid
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     private function getLastmodifiedByContentLog($contenttypeslug, $contentid)
     {
-        // Get the proper contenttype.
+        // Get the proper ContentType.
         $contenttype = $this->getContentType($contenttypeslug);
 
-        // get the changelog for the requested contenttype.
+        // get the changelog for the requested ContentType.
         $options = ['limit' => 5, 'order' => 'date', 'direction' => 'DESC'];
 
-        if (intval($contentid) == 0) {
+        if ((int) $contentid == 0) {
             $isFiltered = false;
         } else {
             $isFiltered = true;
-            $options['contentid'] = intval($contentid);
+            $options['contentid'] = (int) $contentid;
         }
 
-        $changelog = $this->storage()->getRepository('Bolt\Storage\Entity\LogChange')->getChangeLogByContentType($contenttype['slug'], $options);
+        /** @var Repository\LogChangeRepository $repo */
+        $repo = $this->storage()->getRepository(Entity\LogChange::class);
+        $changelog = $repo->getChangeLogByContentType($contenttype['slug'], $options);
 
         $context = [
             'changelog'   => $changelog,
@@ -438,10 +502,7 @@ class General extends AsyncBase
             'filtered'    => $isFiltered,
         ];
 
-        $response = $this->render('@bolt/components/panel-lastmodified.twig', ['context' => $context]);
-        $response->setPublic()->setSharedMaxAge(60);
-
-        return $response;
+        return $this->render('@bolt/components/panel-lastmodified.twig', ['context' => $context]);
     }
 
     /**
@@ -449,24 +510,21 @@ class General extends AsyncBase
      *
      * @param string $contenttypeslug
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     private function getLastmodifiedSimple($contenttypeslug)
     {
-        // Get the proper contenttype.
+        // Get the proper ContentType.
         $contenttype = $this->getContentType($contenttypeslug);
 
-        // Get the 'latest' from the requested contenttype.
-        $latest = $this->getContent($contenttype['slug'], ['limit' => 5, 'order' => 'datechanged DESC', 'hydrate' => false]);
+        // Get the 'latest' from the requested ContentType.
+        $latest = $this->getContent($contenttype['slug'], ['limit' => 5, 'order' => '-datechanged', 'hydrate' => false]);
 
         $context = [
             'latest'      => $latest,
             'contenttype' => $contenttype,
         ];
 
-        $response = $this->render('@bolt/components/panel-lastmodified.twig', ['context' => $context]);
-        $response->setPublic()->setSharedMaxAge(60);
-
-        return $response;
+        return $this->render('@bolt/components/panel-lastmodified.twig', ['context' => $context]);
     }
 }

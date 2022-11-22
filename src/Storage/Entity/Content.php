@@ -1,92 +1,117 @@
 <?php
+
 namespace Bolt\Storage\Entity;
 
 use Bolt\Storage\Collection;
 use Bolt\Storage\ContentLegacyService;
+use Bolt\Storage\Mapping;
 use Bolt\Storage\Mapping\ContentTypeTitleTrait;
 use Carbon\Carbon;
 
 /**
  * Entity for Content.
- *
- * @method integer   getId()
- * @method string    getSlug()
- * @method \DateTime getDatepublish()
- * @method \DateTime getDatedepublish()
- * @method integer   getOwnerid()
- * @method string    getStatus()
- * @method setId(integer $id)
- * @method setSlug(string $slug)
- * @method setOwnerid(integer $ownerid)
- * @method setUsername(string $userName)
- * @method setStatus(string $status)
  */
 class Content extends Entity
 {
     use ContentRouteTrait;
+    use ContentTypeTrait;
     use ContentTypeTitleTrait;
 
+    /** @var string|Mapping\ContentType */
     protected $contenttype;
+    /** @var ContentLegacyService */
     protected $_legacy;
+    /** @var int */
     protected $id;
+    /** @var string */
     protected $slug;
+    /** @var \DateTime */
     protected $datecreated;
+    /** @var \DateTime */
     protected $datechanged;
-    protected $datepublish = null;
-    protected $datedepublish = null;
+    /** @var \DateTime */
+    protected $datepublish;
+    /** @var \DateTime */
+    protected $datedepublish;
+    /** @var int */
     protected $ownerid;
+    /** @var string */
     protected $status;
+    /** @var Collection\Relations */
     protected $relation;
+    /** @var Collection\Taxonomy */
     protected $taxonomy;
+    /** @var TemplateFields */
+    protected $templatefields;
 
     /** @var array @deprecated Deprecated since 3.0, to be removed in 4.0. */
     protected $group;
+    /** @var int */
     protected $sortorder;
 
     /**
-     * Getter for templates using {{ content.get(title) }} functions.
-     *
-     * @param string $key
-     *
-     * @return mixed
-     */
-    public function get($key)
-    {
-        if ($key === 'title') {
-            return $this->getTitle();
-        }
-
-        return $this->$key;
-    }
-
-    /**
-     * Setter for content values.
-     *
-     * @param string $key
-     * @param mixed  $value
+     * {@inheritdoc}
      */
     public function set($key, $value)
     {
-        $this->$key = $value;
+        $setter = 'set' . ucfirst($key);
+        if (is_array($value)) {
+            // Filter empty values from the array
+            $value = array_filter($value);
+        }
+        $this->$setter($value);
     }
 
     /**
-     * Getter for a record's 'title' field.
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
      *
-     * If there is no field called 'title' then we just return the first text
-     * type field.
+     * @return int
+     */
+    public function getSortorder()
+    {
+        return $this->sortorder;
+    }
+
+    /**
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
      *
+     * @param int $sortorder
+     */
+    public function setSortorder($sortorder)
+    {
+        $this->sortorder = $sortorder;
+    }
+
+    /**
+     * @return int
+     */
+    public function getId()
+    {
+        return $this->id;
+    }
+
+    /**
+     * @param int $id
+     */
+    public function setId($id)
+    {
+        $this->id = $id;
+    }
+
+    /**
      * @return string
      */
-    public function getTitle()
+    public function getSlug()
     {
-        if (isset($this->_fields['title'])) {
-            return $this->_fields['title'];
-        }
+        return $this->slug;
+    }
 
-        $fieldName = $this->getTitleColumnName($this->contenttype);
-
-        return $this->$fieldName;
+    /**
+     * @param string $slug
+     */
+    public function setSlug($slug)
+    {
+        $this->slug = $slug;
     }
 
     /**
@@ -138,6 +163,14 @@ class Content extends Entity
     }
 
     /**
+     * @return \DateTime
+     */
+    public function getDatepublish()
+    {
+        return $this->datepublish;
+    }
+
+    /**
      * Set published date.
      *
      * @param \DateTime|string|null $date
@@ -145,6 +178,14 @@ class Content extends Entity
     public function setDatepublish($date)
     {
         $this->datepublish = $this->getValidDateObject($date);
+    }
+
+    /**
+     * @return \DateTime
+     */
+    public function getDatedepublish()
+    {
+        return $this->datedepublish;
     }
 
     /**
@@ -157,40 +198,67 @@ class Content extends Entity
         $this->datedepublish = $this->getValidDateObject($date);
     }
 
-    public function getContenttype()
+    /**
+     * @return int
+     */
+    public function getOwnerid()
     {
-        return $this->contenttype;
+        return $this->ownerid;
     }
 
-    public function setContenttype($value)
+    /**
+     * @param int $ownerid
+     */
+    public function setOwnerid($ownerid)
     {
-        $this->contenttype = $value;
+        $this->ownerid = $ownerid;
     }
 
-    public function getRelation()
+    /**
+     * @return string
+     */
+    public function getStatus()
+    {
+        return $this->status;
+    }
+
+    /**
+     * @param string $status
+     */
+    public function setStatus($status)
+    {
+        $this->status = $status;
+    }
+
+    /**
+     * @param string|null $contentType
+     *
+     * @return Collection\Relations
+     */
+    public function getRelation($contentType = null)
     {
         if (!$this->relation instanceof Collection\Relations) {
             $this->relation = new Collection\Relations();
         }
 
+        if ($contentType !== null) {
+            return $this->relation[$contentType];
+        }
+
         return $this->relation;
     }
 
+    /**
+     * @param Collection\Relations $rel
+     */
     public function setRelation(Collection\Relations $rel)
     {
         $this->relation = $rel;
     }
 
-    public function getTemplatefields()
-    {
-        return $this->templatefields;
-    }
-
-    public function setTemplatefields($value)
-    {
-        $this->templatefields = $value;
-    }
-
+    /**
+     * @return Collection\Taxonomy
+     */
     public function getTaxonomy()
     {
         if (!$this->taxonomy instanceof Collection\Taxonomy) {
@@ -200,11 +268,137 @@ class Content extends Entity
         return $this->taxonomy;
     }
 
+    /**
+     * @param Collection\Taxonomy $taxonomy
+     */
     public function setTaxonomy(Collection\Taxonomy $taxonomy)
     {
         $this->taxonomy = $taxonomy;
     }
 
+    /**
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     *
+     * @return array
+     */
+    public function getGroup()
+    {
+        return $this->group;
+    }
+
+    /**
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     *
+     * @param array $group
+     */
+    public function setGroup($group)
+    {
+        $this->group = $group;
+    }
+
+    /**
+     * Helper to set an array of values.
+     *
+     * @param array $values
+     */
+    public function setValues(array $values)
+    {
+        foreach ($values as $key => $value) {
+            $this->set($key, $value);
+        }
+    }
+
+    /**
+     * Helper to return an array of user-defined values from the Entity.
+     * This excludes meta fields set by Bolt.
+     */
+    public function getValues()
+    {
+        $contentType = $this->getContenttype();
+        if (!isset($contentType['fields'])) {
+            return [];
+        }
+
+        $allValues = $this->toArray();
+
+        return array_intersect_key($allValues, ($contentType['fields']));
+    }
+
+    /**
+     * Getter for a record's 'title' field.
+     *
+     * If there is no field called 'title' then we just return the first text
+     * type field.
+     *
+     * @return string
+     */
+    public function getTitle()
+    {
+        $fields = $this->_fields;
+
+        if (array_key_exists('title', $fields)) {
+            return $fields['title'];
+        }
+
+        $fieldNames = $this->getTitleColumnNames($this->contenttype);
+
+        $title = [];
+        foreach ($fieldNames as $fieldName) {
+            // Make sure we add strings only, as some fields may be an array or DateTime.
+            if (array_key_exists($fieldName, $fields)) {
+                $title[] = is_array($fields[$fieldName]) ? implode(' ', $fields[$fieldName]) : (string) $fields[$fieldName];
+            }
+        }
+
+        return implode(' ', $title);
+    }
+
+    /**
+     * @return string|Mapping\ContentType
+     */
+    public function getContenttype()
+    {
+        return $this->contenttype;
+    }
+
+    /**
+     * @param string|Mapping\ContentType $value
+     */
+    public function setContenttype($value)
+    {
+        $this->contenttype = $value;
+    }
+
+    /**
+     * @return TemplateFields|array|null
+     */
+    public function getTemplatefields()
+    {
+        return $this->templatefields ?: [];
+    }
+
+    /**
+     * @param TemplateFields|array|null $value
+     */
+    public function setTemplatefields($value)
+    {
+        if ($value === null) {
+            $value = [];
+        }
+        $this->templatefields = $value;
+    }
+
+    /**
+     * @return ContentLegacyService
+     */
+    public function getLegacy()
+    {
+        return $this->_legacy;
+    }
+
+    /**
+     * @param ContentLegacyService $service
+     */
     public function setLegacyService(ContentLegacyService $service)
     {
         $this->_legacy = $service;
@@ -222,7 +416,8 @@ class Content extends Entity
     {
         if (empty($date)) {
             return null;
-        } elseif (is_string($date)) {
+        }
+        if (is_string($date)) {
             return new Carbon($date);
         }
 

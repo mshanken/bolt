@@ -1,10 +1,11 @@
 <?php
+
 namespace Bolt\Events;
 
 use LogicException;
+use Silex\Api\ControllerProviderInterface;
 use Silex\Application;
 use Silex\ControllerCollection;
-use Silex\ControllerProviderInterface;
 use Symfony\Component\EventDispatcher\Event;
 
 /**
@@ -22,6 +23,8 @@ class MountEvent extends Event
     protected $collection;
 
     /**
+     * Constructor.
+     *
      * @param Application          $app
      * @param ControllerCollection $collection
      */

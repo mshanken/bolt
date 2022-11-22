@@ -1,112 +1,134 @@
 <?php
+
 namespace Bolt\Provider;
 
 use Bolt\Asset;
-use Silex\Application;
-use Silex\ServiceProviderInterface;
+use Bolt\Filesystem\Exception\FileNotFoundException;
+use Bolt\Filesystem\Handler\DirectoryInterface;
+use Pimple\Container;
+use Pimple\ServiceProviderInterface;
+use Symfony\Component\Asset\Context\RequestStackContext;
+use Symfony\Component\Asset\Packages;
+use Symfony\Component\Asset\PathPackage;
+use Webmozart\PathUtil\Path;
 
 /**
  * HTML asset service providers.
  *
- * @author Gawain Lynch <gawain.lynch@gmaill.com>
+ * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
 class AssetServiceProvider implements ServiceProviderInterface
 {
-    public function register(Application $app)
+    public function register(Container $app)
     {
-        $app['asset.salt.factory'] = $app->protect(
-            function () use ($app) {
-                return $app['randomgenerator']->generateString(10);
+        $app['asset.packages'] = function ($app) {
+            $packages = new Packages();
+
+            $bolt = $app['asset.package_factory']('bolt_assets');
+            $packages->addPackage('bolt', $bolt);
+            $packages->addPackage('bolt_assets', $bolt); // For FS plugin
+
+            $packages->addPackage('extensions', new PathPackage('', $app['asset.version_strategy']('web'), $app['asset.context']));
+            $packages->addPackage('files', $app['asset.package_factory']('files'));
+            $packages->addPackage('theme', $app['asset.package_factory']('theme'));
+            $packages->addPackage('themes', $app['asset.package_factory']('themes'));
+            $packages->addPackage('web', $app['asset.package_factory']('web'));
+
+            return $packages;
+        };
+
+        $app['asset.package_factory'] = $app->protect(
+            function ($name) use ($app) {
+                $path = $app['path_resolver']->resolve($name);
+                $web = $app['path_resolver']->resolve('web');
+                $basePath = Path::makeRelative($path, $web);
+
+                return new PathPackage(
+                    $basePath,
+                    $app['asset.version_strategy']($name),
+                    $app['asset.context']
+                );
             }
         );
 
-        $app['asset.salt'] = $app->share(
-            function ($app) {
-                $path = $app['resources']->getPath('cache/.assetsalt');
-                if (is_readable($path)) {
-                    $salt = file_get_contents($path);
-                } else {
-                    $salt = $app['asset.salt.factory']();
-                    file_put_contents($path, $salt);
+        $app['asset.version_strategy'] = $app->protect(
+            function ($nameOrDir) use ($app) {
+                $dir = $nameOrDir instanceof DirectoryInterface
+                    ? $nameOrDir
+                    : $app['filesystem']->getFilesystem($nameOrDir)->getDir('');
+                $mount = $dir->getMountPoint();
+                $manifest = $app['config']->get("general/assets/$mount/json_manifest_path");
+
+                if ($manifest === null) {
+                    return new Asset\BoltVersionStrategy($dir, $app['asset.salt']);
                 }
 
-                return $salt;
+                return new Asset\JsonManifestVersionStrategy($dir->getFile($manifest));
             }
         );
 
-        $app['asset.file.hash.factory'] = $app->protect(
-            function ($fileName) use ($app) {
-                $fullPath = $app['resources']->getPath('root') . '/' . $fileName;
+        $app['asset.context'] = function () use ($app) {
+            return new RequestStackContext($app['request_stack']);
+        };
 
-                if (is_readable($fullPath)) {
-                    return substr(md5($app['asset.salt'] . $fullPath . (string) filemtime($fullPath)), 0, 10);
-                } elseif (is_readable($fileName)) {
-                    return substr(md5($app['asset.salt'] . $fileName . (string) filemtime($fileName)), 0, 10);
-                } else {
-                    return substr(md5($app['asset.salt'] . $fileName . mt_rand()), 0, 10);
-                }
+        $app['asset.salt.factory'] = $app->factory(function ($app) {
+            return $app['randomgenerator']->generateString(10);
+        });
+
+        $app['asset.salt'] = function ($app) {
+            $file = $app['filesystem']->getFile('cache://.assetsalt');
+
+            try {
+                $salt = $file->read();
+            } catch (FileNotFoundException $e) {
+                $salt = $app['asset.salt.factory'];
+                $file->put($salt);
             }
-        );
 
-        $app['asset.injector'] = $app->share(
-            function () {
-                $snippets = new Asset\Injector();
+            return $salt;
+        };
 
-                return $snippets;
-            }
-        );
+        $app['asset.injector'] = function () {
+            $snippets = new Asset\Injector();
 
-        $app['asset.queue.file'] = $app->share(
-            function ($app) {
-                $queue = new Asset\File\Queue(
-                    $app['asset.injector'],
-                    $app['cache'],
-                    $app['asset.file.hash.factory']
-                );
+            return $snippets;
+        };
 
-                return $queue;
-            }
-        );
+        $app['asset.queue.file'] = function ($app) {
+            $queue = new Asset\File\Queue(
+                $app['asset.injector'],
+                $app['asset.packages'],
+                $app['config']
+            );
 
-        $app['asset.queue.snippet'] = $app->share(
-            function ($app) {
-                $queue = new Asset\Snippet\Queue(
-                    $app['asset.injector'],
-                    $app['cache'],
-                    $app['config'],
-                    $app['resources'],
-                    $app['request_stack'],
-                    $app['logger.system']
-                );
+            return $queue;
+        };
 
-                return $queue;
-            }
-        );
+        $app['asset.queue.snippet'] = function ($app) {
+            $queue = new Asset\Snippet\Queue(
+                $app['asset.injector'],
+                $app['cache']
+            );
 
-        $app['asset.queue.widget'] = $app->share(
-            function ($app) {
-                $queue = new Asset\Widget\Queue(
-                    $app['asset.injector'],
-                    $app['cache'],
-                    $app['render']
-                );
+            return $queue;
+        };
 
-                return $queue;
-            }
-        );
+        $app['asset.queue.widget'] = function ($app) {
+            $queue = new Asset\Widget\Queue(
+                $app['asset.injector'],
+                $app['cache'],
+                $app['twig']
+            );
 
-        $app['asset.queues'] = $app->share(
-            function ($app) {
-                return [
-                    $app['asset.queue.file'],
-                    $app['asset.queue.snippet'],
-                    $app['asset.queue.widget'],
-                ];
-            }
-        );
-    }
+            return $queue;
+        };
 
-    public function boot(Application $app)
-    {
+        $app['asset.queues'] = function ($app) {
+            return [
+                $app['asset.queue.file'],
+                $app['asset.queue.snippet'],
+                $app['asset.queue.widget'],
+            ];
+        };
     }
 }

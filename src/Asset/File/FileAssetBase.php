@@ -1,5 +1,8 @@
 <?php
+
 namespace Bolt\Asset\File;
+
+use Bolt\Controller\Zone;
 
 /**
  * File asset base class.
@@ -11,24 +14,43 @@ abstract class FileAssetBase implements FileAssetInterface
     /** @var string */
     protected $type;
     /** @var string */
-    protected $fileName;
-    /** @var boolean */
+    protected $path;
+    /** @var string */
+    protected $packageName;
+    /** @var string */
+    protected $url;
+    /** @var bool */
     protected $late;
-    /** @var integer */
+    /** @var int */
     protected $priority;
+    /** @var string */
+    protected $location;
     /** @var array */
     protected $attributes;
     /** @var string */
-    protected $cacheHash;
+    protected $zone = Zone::FRONTEND;
 
     /**
      * Constructor.
      *
-     * @param string $fileName
+     * @param string $path
+     * @param string $packageName
      */
-    public function __construct($fileName = null)
+    public function __construct($path = null, $packageName = null)
     {
-        $this->fileName = $fileName;
+        $this->path = $path;
+        $this->packageName = $packageName;
+    }
+
+    /**
+     * @param string $path
+     * @param string $packageName
+     *
+     * @return FileAssetInterface
+     */
+    public static function create($path = null, $packageName = null)
+    {
+        return new static($path, $packageName);
     }
 
     /**
@@ -44,7 +66,7 @@ abstract class FileAssetBase implements FileAssetInterface
      */
     public function getFileName()
     {
-        return $this->fileName;
+        return $this->path;
     }
 
     /**
@@ -52,7 +74,67 @@ abstract class FileAssetBase implements FileAssetInterface
      */
     public function setFileName($fileName)
     {
-        $this->fileName = $fileName;
+        $this->path = $fileName;
+
+        return $this;
+    }
+
+    /**
+     * @return string
+     */
+    public function getPath()
+    {
+        return $this->path;
+    }
+
+    /**
+     * @param string $path
+     *
+     * @return FileAssetBase
+     */
+    public function setPath($path)
+    {
+        $this->path = $path;
+
+        return $this;
+    }
+
+    /**
+     * @return string
+     */
+    public function getPackageName()
+    {
+        return $this->packageName;
+    }
+
+    /**
+     * @param string $packageName
+     *
+     * @return FileAssetBase
+     */
+    public function setPackageName($packageName)
+    {
+        $this->packageName = $packageName;
+
+        return $this;
+    }
+
+    /**
+     * @return string
+     */
+    public function getUrl()
+    {
+        return $this->url;
+    }
+
+    /**
+     * @param string $url
+     *
+     * @return FileAssetBase
+     */
+    public function setUrl($url)
+    {
+        $this->url = $url;
 
         return $this;
     }
@@ -62,7 +144,7 @@ abstract class FileAssetBase implements FileAssetInterface
      */
     public function isLate()
     {
-        return (boolean) $this->late;
+        return (bool) $this->late;
     }
 
     /**
@@ -76,7 +158,7 @@ abstract class FileAssetBase implements FileAssetInterface
     }
 
     /**
-     * {@inheritDoc}
+     * {@inheritdoc}
      */
     public function getPriority()
     {
@@ -89,6 +171,24 @@ abstract class FileAssetBase implements FileAssetInterface
     public function setPriority($priority)
     {
         $this->priority = $priority;
+
+        return $this;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getLocation()
+    {
+        return $this->location;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setLocation($location)
+    {
+        $this->location = $location;
 
         return $this;
     }
@@ -128,17 +228,17 @@ abstract class FileAssetBase implements FileAssetInterface
     /**
      * {@inheritdoc}
      */
-    public function getCacheHash()
+    public function getZone()
     {
-        return $this->cacheHash;
+        return $this->zone;
     }
 
     /**
      * {@inheritdoc}
      */
-    public function setCacheHash($cacheHash)
+    public function setZone($zone)
     {
-        $this->cacheHash = $cacheHash;
+        $this->zone = $zone;
 
         return $this;
     }

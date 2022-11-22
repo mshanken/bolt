@@ -1,5 +1,8 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
+
+use Doctrine\DBAL\Types\Type;
 
 /**
  * This is one of a suite of basic Bolt field transformers that handles
@@ -15,5 +18,13 @@ class CheckboxType extends FieldTypeBase
     public function getName()
     {
         return 'checkbox';
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getStorageType()
+    {
+        return Type::getType('boolean');
     }
 }

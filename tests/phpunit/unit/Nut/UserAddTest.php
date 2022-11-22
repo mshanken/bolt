@@ -1,9 +1,12 @@
 <?php
+
 namespace Bolt\Tests\Nut;
 
+use Bolt\AccessControl\PasswordHashManager;
 use Bolt\Nut\UserAdd;
+use Bolt\Storage\Entity;
+use Bolt\Storage\Repository\UsersRepository;
 use Bolt\Tests\BoltUnitTest;
-use PasswordLib\PasswordLib;
 use Symfony\Component\Console\Tester\CommandTester;
 
 /**
@@ -18,6 +21,7 @@ class UserAddTest extends BoltUnitTest
         $this->resetDb();
         $app = $this->getApp();
         $command = new UserAdd($app);
+        $command->setApplication($app['nut']);
         $tester = new CommandTester($command);
 
         $tester->execute(
@@ -26,18 +30,19 @@ class UserAddTest extends BoltUnitTest
                 'displayname' => 'Test',
                 'email'       => 'test@example.com',
                 'password'    => 'testPass',
-                'role'        => 'admin'
+                'role'        => 'admin',
             ]
         );
         $result = $tester->getDisplay();
-        $this->assertEquals('Successfully created user: test', trim($result));
+        $this->assertRegExp('/Successfully created user: test/', $result);
 
         // Test that the saved value matches the hash
-        $repo = $app['storage']->getRepository('Bolt\Storage\Entity\Users');
+        /** @var UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
         $userEntity = $repo->getUser('test');
         $userAuth = $repo->getUserAuthData($userEntity->getId());
-        $crypt = new PasswordLib();
-        $auth = $crypt->verifyPasswordHash('testPass', $userAuth->getPassword());
+        $crypt = new PasswordHashManager();
+        $auth = $crypt->verifyHash('testPass', $userAuth->getPassword());
         $this->assertTrue($auth);
     }
 
@@ -53,31 +58,13 @@ class UserAddTest extends BoltUnitTest
                 'displayname' => 'Test',
                 'email'       => 'test@example.com',
                 'password'    => 'test',
-                'role'        => 'admin'
+                'role'        => 'admin',
             ]
         );
         $result = $tester->getDisplay();
-        $this->assertRegExp('#Error creating user:#', trim($result));
-        $this->assertRegExp("#    \* User name 'test' already exists#", trim($result));
-        $this->assertRegExp("#    \* Email address 'test@example.com' already exists#", trim($result));
-    }
-
-    public function testFailure()
-    {
-        $app = $this->getApp();
-        $command = new UserAdd($app);
-        $tester = new CommandTester($command);
-
-        $tester->execute(
-            [
-                'username'    => 'koala',
-                'displayname' => '',
-                'email'       => '',
-                'password'    => '',
-                'role'        => ''
-            ]
-        );
-        $result = $tester->getDisplay();
-        $this->assertEquals('Error creating user: koala', trim($result));
+        $this->assertRegExp('#Error creating user:#', $result);
+        $this->assertRegExp('#username is already in use#', $result);
+        $this->assertRegExp('#displayname is already in use#', $result);
+        $this->assertRegExp('#email address is already in use#', $result);
     }
 }

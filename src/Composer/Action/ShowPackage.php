@@ -10,6 +10,7 @@ use Composer\Repository\ArrayRepository;
 use Composer\Repository\ComposerRepository;
 use Composer\Repository\CompositeRepository;
 use Composer\Repository\PlatformRepository;
+use Composer\Repository\RepositoryFactory;
 use Composer\Repository\RepositoryInterface;
 
 /**
@@ -25,10 +26,10 @@ final class ShowPackage extends BaseAction
     /**
      * Retrieves detailed information about a package, or lists all packages available.
      *
-     * @param string  $type    Repository type, either: 'self', 'platform', 'installed' or 'available'
-     * @param string  $package Package name to show
-     * @param string  $version Package version to show
-     * @param boolean $root    Query the Bolt parent composer install
+     * @param string $type    Repository type, either: 'self', 'platform', 'installed' or 'available'
+     * @param string $package Package name to show
+     * @param string $version Package version to show
+     * @param bool   $root    Query the Bolt parent composer install
      *
      * @return array Array of Composer packages
      */
@@ -37,8 +38,8 @@ final class ShowPackage extends BaseAction
         $io = $this->getIO();
 
         if ($root) {
-            $composerjson = $this->app['resources']->getPath('root/composer.json');
-            $composer = Factory::create($io, $composerjson, true);
+            $composerJson = $this->app['path_resolver']->resolve('composer.json');
+            $composer = Factory::create($io, $composerJson, true);
         } else {
             $composer = $this->getComposer();
         }
@@ -70,7 +71,7 @@ final class ShowPackage extends BaseAction
                     $repos = new CompositeRepository($composer->getRepositoryManager()->getRepositories());
                 } else {
                     // No composer.json found in the current directory, showing available packages from default repos.
-                    $defaultRepos = Factory::createDefaultRepositories($io);
+                    $defaultRepos = RepositoryFactory::defaultRepos($io);
                     $repos = new CompositeRepository($defaultRepos);
                 }
                 break;
@@ -83,7 +84,7 @@ final class ShowPackage extends BaseAction
                     $repos = new CompositeRepository($merged);
                 } else {
                     // No composer.json found in the current directory, showing available packages from default repos.
-                    $defaultRepos = Factory::createDefaultRepositories($io);
+                    $defaultRepos = RepositoryFactory::defaultRepos($io);
                     $installedRepo = $platformRepo;
                     $repos = new CompositeRepository(array_merge([$installedRepo], $defaultRepos));
                 }
@@ -98,9 +99,9 @@ final class ShowPackage extends BaseAction
                         'versions' => $package->getVersion(),
                     ],
                 ];
-            } else {
-                return $this->getPackage($installedRepo, $repos, $package, $version);
             }
+
+            return $this->getPackage($installedRepo, $repos, $package, $version);
         }
 
         $packages = [];

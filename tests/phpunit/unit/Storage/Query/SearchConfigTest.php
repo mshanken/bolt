@@ -16,7 +16,7 @@ class SearchConfigTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $search = new SearchConfig($app['config']);
-        $this->assertTrue(is_array($search->getConfig('pages')));
+        $this->assertInternalType('array', $search->getConfig('pages'));
     }
 
     public function testNonExistent()
@@ -30,7 +30,7 @@ class SearchConfigTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $search = new SearchConfig($app['config']);
-        $this->assertTrue(is_array($search->getFieldConfig('pages', 'title')));
+        $this->assertInternalType('array', $search->getFieldConfig('pages', 'title'));
         $this->assertFalse($search->getFieldConfig('pages', 'nonexistent'));
     }
 
@@ -54,9 +54,9 @@ class SearchConfigTest extends BoltUnitTest
     public function testTaxonomyWeighting()
     {
         $app = $this->getApp();
-        $app['config']->set('taxonomy/chapters/searchweight', 100);
+        $app['config']->set('taxonomy/groups/searchweight', 100);
         $search = new SearchConfig($app['config']);
-        $fieldConfig = $search->getFieldConfig('pages', 'chapters');
+        $fieldConfig = $search->getFieldConfig('pages', 'groups');
         $this->assertEquals(100, $fieldConfig['weight']);
     }
 

@@ -2,8 +2,9 @@
 
 namespace Bolt\Nut;
 
-use Bolt\Configuration\Environment;
+use Bolt\Filesystem\Handler\Directory;
 use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -14,31 +15,72 @@ use Symfony\Component\Console\Output\OutputInterface;
 class SetupSync extends BaseCommand
 {
     /**
-     * {@inheritDoc}
+     * {@inheritdoc}
      */
     protected function configure()
     {
         $this
             ->setName('setup:sync')
-            ->setDescription('Synchronise a Bolt install private asset directories with the web root.');
+            ->setDescription('Synchronise a Bolt install private asset directories with the web root.')
+            ->addOption('themes', 't', InputOption::VALUE_NONE, 'Copy example themes from bolt/themes into the site theme base-directory.')
+        ;
     }
 
     /**
-     * {@inheritDoc}
+     * {@inheritdoc}
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         /** @var \Bolt\Configuration\Environment $environment */
         $environment = $this->app['config.environment'];
 
-        $response = $environment->syncView();
+        if ($input->getOption('themes')) {
+            $this->mirrorThemes();
+        }
+
+        $this->io->title('Synchronising Bolt asset directories with the web root');
+        $response = $environment->syncAssets();
         if ($response === null) {
-            $output->writeln('<info>​Directory synchronisation succeeded​.</info>');
-        } else {
-            $output->writeln('<comment>​Directory synchronisation encountered problems:</comment>');
-            foreach ($response as $message) {
-                $output->writeln('<comment>' . $message . '</comment>');
-            }
+            $this->io->success('Directory synchronisation succeeded​.');
+
+            return 0;
+        }
+        $errors = ['Directory synchronisation encountered problems:'];
+        foreach ($response as $message) {
+            $errors[] = $message;
+        }
+        $this->io->error($errors);
+
+        return 1;
+    }
+
+    /**
+     * Mirror the bolt/themes themes with the public theme directory.
+     */
+    private function mirrorThemes()
+    {
+        $filesystem = $this->app['filesystem'];
+        $themes = $filesystem->find()
+            ->directories()
+            ->in('root://vendor/bolt/themes')
+            ->depth(0)
+        ;
+
+        $confirm = $this->io->confirm('Continuing will copy/update the example themes into your installation, overwriting older copies. Is this OK?');
+        if (!$confirm) {
+            $this->io->note('Skipping theme copy');
+
+            return;
+        }
+
+        foreach ($themes as $theme) {
+            /** @var Directory $theme */
+            $origin = $theme->getFullPath();
+            $target = 'themes://' . $theme->getFilename();
+
+            $this->io->title('Installing theme: ' . $theme->getFilename());
+            $filesystem->mirror($origin, $target, ['override' => true]);
+            $this->io->success('');
         }
     }
 }

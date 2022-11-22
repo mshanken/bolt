@@ -7,14 +7,20 @@ use Bolt\Storage\Database\Schema\Table\ContentType;
 use Bolt\Storage\Field\Manager as FieldManager;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\DBAL\Schema\Table;
+use Doctrine\DBAL\Types\Type;
 
 /**
  * Builder for Bolt content tables.
+ *
+ * @internal
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
 class ContentTables extends BaseBuilder
 {
+    /** @var array */
+    protected $tableSchemas;
+
     /**
      * Build the schema for Bolt ContentType tables.
      *
@@ -25,19 +31,44 @@ class ContentTables extends BaseBuilder
      */
     public function getSchemaTables(Schema $schema, Config $config)
     {
+        if ($this->tableSchemas !== null) {
+            return $this->tableSchemas;
+        }
+
         /** @var $fieldManager FieldManager */
         $fieldManager = $config->getFields();
-        $contentTypes = $config->get('contenttypes');
+        $contentTypes = $this->getNormalisedContentTypes($config);
         $tables = [];
+
         foreach ($this->tables->keys() as $name) {
             $contentType = $contentTypes[$name];
-            $tables[$name] = $this->tables[$name]->buildTable($schema, $this->prefix . $name, $name, $this->charset, $this->collate);
+            /** @var ContentType $table */
+            $table = $this->tables[$name];
+            $tables[$name] = $table->buildTable($schema, $name, $this->charset, $this->collate);
             if (isset($contentType['fields']) && is_array($contentType['fields'])) {
                 $this->addContentTypeTableColumns($this->tables[$name], $tables[$name], $contentType['fields'], $fieldManager);
             }
         }
 
-        return $tables;
+        return $this->tableSchemas = $tables;
+    }
+
+    /**
+     * Return an array of ContentTypes with the table name is the key.
+     *
+     * @param Config $config
+     *
+     * @return array
+     */
+    private function getNormalisedContentTypes(Config $config)
+    {
+        $normalised = [];
+        $contentTypes = $config->get('contenttypes');
+        foreach ($contentTypes as $contentType) {
+            $normalised[$contentType['tablename']] = $contentType;
+        }
+
+        return $normalised;
     }
 
     /**
@@ -81,13 +112,13 @@ class ContentTables extends BaseBuilder
     {
         if ($tableObj->isKnownType($values['type'])) {
             // Use loose comparison on true as 'true' in YAML is a string
-            $addIndex = isset($values['index']) && (boolean) $values['index'] === true;
-            // Add the contenttype's specific fields
+            $addIndex = isset($values['index']) && (bool) $values['index'] === true;
+            // Add the ContentType's specific fields
             $tableObj->addCustomFields($fieldName, $this->getContentTypeTableColumnType($values), $addIndex);
         } elseif ($handler = $fieldManager->getDatabaseField($values['type'])) {
-            // Add template fields
+            $type = ($handler->getStorageType() instanceof Type) ? $handler->getStorageType()->getName() : $handler->getStorageType();
             /** @var $handler \Bolt\Storage\Field\FieldInterface */
-            $table->addColumn($fieldName, $handler->getStorageType(), $handler->getStorageOptions());
+            $table->addColumn($fieldName, $type, $handler->getStorageOptions());
         }
     }
 
@@ -101,7 +132,7 @@ class ContentTables extends BaseBuilder
     private function getContentTypeTableColumnType(array $values)
     {
         // Multi-value selects are stored as JSON arrays
-        if (isset($values['type']) && $values['type'] === 'select' && isset($values['multiple']) && $values['multiple'] === 'true') {
+        if (isset($values['type']) && $values['type'] === 'select' && isset($values['multiple']) && $values['multiple'] === true) {
             return 'selectmultiple';
         }
 

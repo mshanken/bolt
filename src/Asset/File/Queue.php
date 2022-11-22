@@ -1,12 +1,17 @@
 <?php
+
 namespace Bolt\Asset\File;
 
 use Bolt\Asset\AssetSortTrait;
 use Bolt\Asset\Injector;
 use Bolt\Asset\QueueInterface;
 use Bolt\Asset\Target;
-use Closure;
-use Doctrine\Common\Cache\CacheProvider;
+use Bolt\Config;
+use Bolt\Controller\Zone;
+use InvalidArgumentException;
+use Symfony\Component\Asset\Packages;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * File asset queue processor.
@@ -20,10 +25,10 @@ class Queue implements QueueInterface
 
     /** @var \Bolt\Asset\Injector */
     protected $injector;
-    /** @var \Doctrine\Common\Cache\CacheProvider */
-    protected $cache;
-    /** @var \Closure */
-    protected $fileHasher;
+    /** @var Packages */
+    protected $packages;
+    /** @var Config */
+    protected $config;
 
     /** @var FileAssetInterface[] */
     private $stylesheet = [];
@@ -33,15 +38,15 @@ class Queue implements QueueInterface
     /**
      * Constructor.
      *
-     * @param Injector      $injector
-     * @param CacheProvider $cache
-     * @param Closure       $fileHasher
+     * @param Injector $injector
+     * @param Packages $packages
+     * @param Config   $config
      */
-    public function __construct(Injector $injector, CacheProvider $cache, Closure $fileHasher)
+    public function __construct(Injector $injector, Packages $packages, Config $config)
     {
         $this->injector = $injector;
-        $this->cache = $cache;
-        $this->fileHasher = $fileHasher;
+        $this->packages = $packages;
+        $this->config = $config;
     }
 
     /**
@@ -49,20 +54,26 @@ class Queue implements QueueInterface
      *
      * @param FileAssetInterface $asset
      *
-     * @throws \InvalidArgumentException
+     * @throws InvalidArgumentException
      */
     public function add(FileAssetInterface $asset)
     {
-        $fileHasher = $this->fileHasher;
-        $cacheHash = $fileHasher($asset->getFileName());
-        $asset->setCacheHash($cacheHash);
+        if (!$asset->getPackageName()) {
+            throw new InvalidArgumentException(sprintf(
+                'File asset with path "%s" was added to the queue without an asset package specified.',
+                $asset->getPath()
+            ));
+        }
+
+        $url = $this->packages->getUrl($asset->getPath(), $asset->getPackageName());
+        $asset->setUrl($url);
 
         if ($asset->getType() === 'javascript') {
-            $this->javascript[$cacheHash] = $asset;
+            $this->javascript[$url] = $asset;
         } elseif ($asset->getType() === 'stylesheet') {
-            $this->stylesheet[$cacheHash] = $asset;
+            $this->stylesheet[$url] = $asset;
         } else {
-            throw new \InvalidArgumentException(sprintf('Requested asset type %s is not valid.', $asset->getType()));
+            throw new InvalidArgumentException(sprintf('Requested asset type %s is not valid.', $asset->getType()));
         }
     }
 
@@ -71,21 +82,22 @@ class Queue implements QueueInterface
      *
      * Uses sorting by priority.
      */
-    public function process($html)
+    public function process(Request $request, Response $response)
     {
+        // Conditionally add jQuery
+        $this->addJquery($request, $response);
+
         /** @var FileAssetInterface $asset */
         foreach ($this->sort($this->javascript) as $key => $asset) {
-            $html = $this->processJsAssets($asset, $html);
+            $this->processAsset($asset, $request, $response);
             unset($this->javascript[$key]);
         }
 
         /** @var FileAssetInterface $asset */
         foreach ($this->sort($this->stylesheet) as $key => $asset) {
-            $html = $this->processCssAssets($asset, $html);
+            $this->processAsset($asset, $request, $response);
             unset($this->stylesheet[$key]);
         }
-
-        return $html;
     }
 
     /**
@@ -109,36 +121,66 @@ class Queue implements QueueInterface
     }
 
     /**
-     * Process the CSS asset queue.
+     * Process a single asset.
      *
      * @param FileAssetInterface $asset
-     * @param string             $html
-     *
-     * @return string
+     * @param Request            $request
+     * @param Response           $response
      */
-    protected function processCssAssets(FileAssetInterface $asset, $html)
+    protected function processAsset(FileAssetInterface $asset, Request $request, Response $response)
     {
-        if ($asset->isLate()) {
-            return $this->injector->inject($asset, Target::END_OF_BODY, $html);
+        if ($asset->getZone() !== Zone::get($request)) {
+            return;
+        } elseif ($asset->isLate()) {
+            if ($asset->getLocation() === null) {
+                $location = Target::END_OF_BODY;
+            } else {
+                $location = $asset->getLocation();
+            }
+        } elseif ($asset->getLocation() !== null) {
+            $location = $asset->getLocation();
         } else {
-            return $this->injector->inject($asset, Target::BEFORE_CSS, $html);
+            $location = Target::END_OF_HEAD;
         }
+
+        $this->injector->inject($asset, $location, $response);
     }
 
     /**
-     * Process the JavaScript asset queue.
+     * Insert jQuery, if it's not inserted already.
      *
-     * @param FileAssetInterface $asset
-     * @param string             $html
+     * Some of the patterns that 'match' are:
+     * - jquery.js
+     * - jquery.min.js
+     * - jquery-latest.js
+     * - jquery-latest.min.js
+     * - jquery-1.8.2.min.js
+     * - jquery-1.5.js
      *
-     * @return string
+     * @param Request  $request
+     * @param Response $response
      */
-    protected function processJsAssets(FileAssetInterface $asset, $html)
+    protected function addJquery(Request $request, Response $response)
     {
-        if ($asset->isLate()) {
-            return $this->injector->inject($asset, Target::END_OF_BODY, $html);
-        } else {
-            return $this->injector->inject($asset, Target::AFTER_JS, $html);
+        if (!$this->config->get('general/add_jquery', false) &&
+            !$this->config->get('theme/add_jquery', false)) {
+            return;
         }
+
+        // Check zone to skip expensive regex
+        if (Zone::isFrontend($request) === false) {
+            return;
+        }
+
+        $html = $response->getContent();
+        $regex = '/<script(.*)jquery(-latest|-[0-9\.]*)?(\.min)?\.js/';
+        if (preg_match($regex, $html)) {
+            return;
+        }
+
+        $this->add(
+            (new JavaScript('js/jquery-2.2.4.min.js', 'bolt'))
+                ->setLocation(Target::BEFORE_JS)
+        );
     }
 }

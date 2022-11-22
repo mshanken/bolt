@@ -2,35 +2,41 @@
 
 namespace Bolt\Storage\Field\Collection;
 
-use Bolt\Storage\EntityManager;
-use Doctrine\Common\Collections\AbstractLazyCollection;
+use Bolt\Storage\Entity\FieldValue;
 use Doctrine\Common\Collections\ArrayCollection;
+use ParsedownExtra as Markdown;
+use Twig\Markup;
+use Webmozart\Assert\Assert;
 
 /**
- *  This class is used by lazily loaded field values. It stores a reference to an array of rows and
- *  fetches from the database on demand.
+ * A mapping of FieldValues.
  *
- *  @author Ross Riley <riley.ross@gmail.com>
+ * @author Ross Riley <riley.ross@gmail.com>
+ * @author Carson Full <carsonfull@gmail.com>
  */
-class FieldCollection extends AbstractLazyCollection
+class FieldCollection extends ArrayCollection implements FieldCollectionInterface
 {
-    public $references = [];
-    protected $em;
+    /** @var int */
     protected $grouping;
+    protected $block;
     protected $toRemove = [];
 
     /**
-     * @param array              $references
-     * @param EntityManager|null $em
+     * Constructor.
+     *
+     * @param FieldValue[] $elements
      */
-    public function __construct(array $references = [], EntityManager $em = null)
+    public function __construct(array $elements = [])
     {
-        $this->references = $references;
-        $this->em = $em;
+        parent::__construct([]);
+
+        foreach ($elements as $value) {
+            $this->add($value);
+        }
     }
 
     /**
-     * @return array
+     * {@inheritdoc}
      */
     public function getNew()
     {
@@ -46,7 +52,7 @@ class FieldCollection extends AbstractLazyCollection
     }
 
     /**
-     * @return array
+     * {@inheritdoc}
      */
     public function getExisting()
     {
@@ -62,46 +68,127 @@ class FieldCollection extends AbstractLazyCollection
     }
 
     /**
-     * @param mixed $grouping
+     * {@inheritdoc}
+     */
+    public function get($key)
+    {
+        $result = parent::get($key);
+
+        if ($result instanceof FieldValue) {
+            $result = $result->getValue();
+        }
+
+        return $result;
+    }
+
+    /**
+     * {@inheritdoc}
      */
     public function setGrouping($grouping)
     {
         $this->grouping = $grouping;
+
+        foreach ($this as $entity) {
+            $entity->setGrouping($grouping);
+        }
     }
 
     /**
-     * @param mixed $element
-     *
-     * @return bool
+     * @param mixed $block
      */
-    public function add($element)
+    public function setBlock($block)
     {
-        $element->setGrouping($this->grouping);
-
-        return parent::add($element);
+        $this->block = $block;
     }
 
     /**
-     * Handles the conversion of references to entities.
+     * @return string
      */
-    protected function doInitialize()
+    public function getBlock()
     {
-        $objects = [];
-        if ($this->references) {
-            $repo = $this->em->getRepository('Bolt\Storage\Entity\FieldValue');
-            $instances = $repo->findBy(['id' => $this->references]);
+        return $this->first()->getBlock();
+    }
 
-            foreach ((array) $instances as $val) {
-                $fieldtype = $val->getFieldtype();
-                $field = $this->em->getFieldManager()->getFieldFor($fieldtype);
-                $type = $field->getStorageType();
-                $typeCol = 'value_' . $type->getName();
-                $val->setValue($val->$typeCol);
-                $objects[$val->getName()] = $val;
-            }
+    /**
+     * {@inheritdoc}
+     */
+    public function add($value)
+    {
+        Assert::isInstanceOf($value, FieldValue::class);
+
+        $this->set($value->getFieldName(), $value);
+
+        return true;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function set($key, $value)
+    {
+        Assert::isInstanceOf($value, FieldValue::class);
+
+        $value->setGrouping($this->grouping);
+
+        parent::set($key, $value);
+    }
+
+    /**
+     * @return \Iterator|FieldValue[]
+     */
+    public function getIterator()
+    {
+        return parent::getIterator();
+    }
+
+    public function serialize()
+    {
+        $output = [];
+
+        foreach ($this->collection as $field) {
+            $output[$field->getFieldName()] = $field->getValue();
         }
 
-        $this->collection = new ArrayCollection($objects);
-        $this->em = null;
+        return $output;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getFieldType($fieldName)
+    {
+        $field = parent::get($fieldName);
+
+        if ($field) {
+            return $field->getFieldType();
+        }
+
+        return null;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getRenderedValue($fieldName)
+    {
+        $field = parent::get($fieldName);
+
+        if (!$field instanceof FieldValue) {
+            return null;
+        }
+
+        $fieldType = $field->getFieldType();
+        $value = $field->getValue();
+
+        if ($fieldType === 'markdown') {
+            $markdown = new Markdown();
+            $value = $markdown->text($value);
+        }
+
+        if (in_array($fieldType, ['markdown', 'html', 'text', 'textarea'], true)) {
+            $value = new Markup($value, 'UTF-8');
+        }
+
+        return $value;
     }
 }

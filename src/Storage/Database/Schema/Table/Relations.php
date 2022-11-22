@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Storage\Database\Schema\Table;
 
 /**
@@ -27,10 +28,8 @@ class Relations extends BaseTable
      */
     protected function addIndexes()
     {
-        $this->table->addIndex(['from_contenttype']);
-        $this->table->addIndex(['from_id']);
-        $this->table->addIndex(['to_contenttype']);
-        $this->table->addIndex(['to_id']);
+        $this->table->addIndex(['from_contenttype', 'from_id']);
+        $this->table->addIndex(['to_contenttype', 'to_id']);
     }
 
     /**

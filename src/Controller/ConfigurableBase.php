@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Controller;
 
 use Doctrine\Common\Collections\ArrayCollection;
@@ -84,16 +85,20 @@ abstract class ConfigurableBase extends Base
 
         foreach ($config['requirements'] ?: [] as $variable => $callback) {
             $callback = $this->callbackResolver->resolveCallback($callback);
-            $requirement = is_callable($callback) ? call_user_func($callback) : $callback;
+            $requirement = is_callable($callback) ? $callback() : $callback;
             $route->assert($variable, $requirement);
         }
 
         if ($host = $config['host']) {
-            $route->setHost($host);
+            $route->getRoute()->setHost($host);
         }
 
         if ($methods = $config['methods']) {
-            $route->setMethods($methods);
+            $route->getRoute()->setMethods($methods);
+        }
+
+        if ($schemes = $config['schemes']) {
+            $route->getRoute()->setSchemes($schemes);
         }
 
         $route->bind($name);
@@ -117,7 +122,7 @@ abstract class ConfigurableBase extends Base
                 return null;
             }
 
-            return call_user_func($callback, $request, $app);
+            return $callback($request, $app);
         };
     }
 
@@ -139,13 +144,13 @@ abstract class ConfigurableBase extends Base
                 return null;
             }
 
-            return call_user_func($callback, $request, $response, $app);
+            return $callback($request, $response, $app);
         };
     }
 
     /**
      * Returns a closure that will resolve the class to use
-     * in middleware callback if one isn't specified
+     * in middleware callback if one isn't specified.
      *
      * @param array|string|null $callback
      *
@@ -156,7 +161,7 @@ abstract class ConfigurableBase extends Base
         $callbackResolver = $this->callbackResolver;
 
         return function (Request $request) use ($callback, $callbackResolver) {
-            if (!substr($callback, 0, 2) === '::') {
+            if (!is_string($callback) || substr($callback, 0, 2) !== '::') {
                 return $callbackResolver->resolveCallback($callback);
             }
 
@@ -164,12 +169,15 @@ abstract class ConfigurableBase extends Base
             if (is_array($controller)) {
                 list($cls, $_) = $controller;
             } elseif (is_string($controller)) {
-                list($cls, $_) = explode('::', $controller);
+                if (strpos($controller, '::') !== false) {
+                    list($cls, $_) = explode('::', $controller);
+                } else {
+                    $cls = $controller;
+                }
             } else {
                 return null;
             }
             $callback = [$cls, substr($callback, 2)];
-            $callback = $callbackResolver->resolveCallback($callback);
 
             return $callback;
         };

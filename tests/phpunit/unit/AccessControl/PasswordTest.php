@@ -1,12 +1,18 @@
 <?php
-namespace Bolt\Tests;
+
+namespace Bolt\Tests\AccessControl;
 
 use Bolt\AccessControl\Password;
+use Bolt\AccessControl\PasswordHashManager;
+use Bolt\Events\AccessControlEvent;
+use Bolt\Storage\Entity;
+use Bolt\Storage\Repository;
+use Bolt\Tests\BoltUnitTest;
 use Carbon\Carbon;
-use PasswordLib\PasswordLib;
+use Symfony\Component\HttpFoundation\Request;
 
 /**
- * Test for AccessControl\Password
+ * Test for AccessControl\Password.
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
@@ -21,23 +27,24 @@ class PasswordTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $this->addDefaultUser($app);
-        $entityName = 'Bolt\Storage\Entity\Users';
-        $repo = $app['storage']->getRepository($entityName);
+        /** @var Repository\UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
 
-        $logger = $this->getMock('\Monolog\Logger', ['info'], ['testlogger']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('info')
             ->with($this->equalTo("Password for user 'admin' was reset via Nut."));
-        $app['logger.system'] = $logger;
+        $this->setService('logger.system', $logger);
 
         $password = new Password($app);
         $newPass = $password->setRandomPassword('admin');
 
+        /** @var Entity\Users $userEntity */
         $userEntity = $repo->getUser('admin');
         $userAuth = $repo->getUserAuthData($userEntity->getId());
 
-        $crypt = new PasswordLib();
-        $compare = $crypt->verifyPasswordHash($newPass, $userAuth->getPassword());
+        $crypt = new PasswordHashManager();
+        $compare = $crypt->verifyHash($newPass, $userAuth->getPassword());
 
         $this->assertTrue($compare);
         $this->assertEmpty($userEntity->getShadowpassword());
@@ -49,20 +56,22 @@ class PasswordTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $this->addDefaultUser($app);
-        $entityName = 'Bolt\Storage\Entity\Users';
-        $repo = $app['storage']->getRepository($entityName);
+        /** @var Repository\UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
 
         $shadowToken = $app['randomgenerator']->generateString(32);
         $shadowTokenHash = md5($shadowToken . '-' . str_replace('.', '-', '8.8.8.8'));
 
+        /** @var Entity\Users $userEntity */
         $userEntity = $repo->getUser('admin');
         $userEntity->setShadowpassword('hash-my-password');
         $userEntity->setShadowtoken($shadowTokenHash);
         $userEntity->setShadowvalidity(Carbon::create()->addHours(1));
         $repo->save($userEntity);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8');
+        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8', $event);
         $userEntity = $repo->getUser('admin');
 
         $this->assertTrue($result);
@@ -75,14 +84,14 @@ class PasswordTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $this->addDefaultUser($app);
-        $entityName = 'Bolt\Storage\Entity\Users';
-        $repo = $app['storage']->getRepository($entityName);
+        /** @var Repository\UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
 
-        $logger = $this->getMock('\Monolog\Logger', ['error'], ['testlogger']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('error')
             ->with($this->equalTo('Somebody tried to reset a password with an invalid token.'));
-        $app['logger.system'] = $logger;
+        $this->setService('logger.system', $logger);
 
         $shadowToken = $app['randomgenerator']->generateString(32);
         $shadowTokenHash = md5($shadowToken . '-' . str_replace('.', '-', '8.8.8.8'));
@@ -93,8 +102,9 @@ class PasswordTest extends BoltUnitTest
         $userEntity->setShadowvalidity(Carbon::create()->addHours(-1));
         $repo->save($userEntity);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8');
+        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8', $event);
 
         $this->assertFalse($result);
     }
@@ -103,14 +113,14 @@ class PasswordTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $this->addDefaultUser($app);
-        $entityName = 'Bolt\Storage\Entity\Users';
-        $repo = $app['storage']->getRepository($entityName);
+        /** @var Repository\UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
 
-        $logger = $this->getMock('\Monolog\Logger', ['error'], ['testlogger']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('error')
             ->with($this->equalTo('Somebody tried to reset a password with an invalid token.'));
-        $app['logger.system'] = $logger;
+        $this->setService('logger.system', $logger);
 
         $shadowToken = $app['randomgenerator']->generateString(32);
         $shadowTokenHash = md5($shadowToken . '-' . str_replace('.', '-', '8.8.8.8'));
@@ -121,8 +131,9 @@ class PasswordTest extends BoltUnitTest
         $userEntity->setShadowvalidity(Carbon::create()->addHours(2));
         $repo->save($userEntity);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordConfirm($shadowToken, '1.1.1.1');
+        $result = $password->resetPasswordConfirm($shadowToken, '1.1.1.1', $event);
 
         $this->assertFalse($result);
     }
@@ -131,14 +142,14 @@ class PasswordTest extends BoltUnitTest
     {
         $app = $this->getApp();
         $this->addDefaultUser($app);
-        $entityName = 'Bolt\Storage\Entity\Users';
-        $repo = $app['storage']->getRepository($entityName);
+        /** @var Repository\UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
 
-        $logger = $this->getMock('\Monolog\Logger', ['error'], ['testlogger']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('error')
             ->with($this->equalTo('Somebody tried to reset a password with an invalid token.'));
-        $app['logger.system'] = $logger;
+        $this->setService('logger.system', $logger);
 
         $shadowToken = $app['randomgenerator']->generateString(32);
 
@@ -148,8 +159,9 @@ class PasswordTest extends BoltUnitTest
         $userEntity->setShadowvalidity(Carbon::create()->addHours(2));
         $repo->save($userEntity);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8');
+        $result = $password->resetPasswordConfirm($shadowToken, '8.8.8.8', $event);
 
         $this->assertFalse($result);
     }
@@ -159,14 +171,15 @@ class PasswordTest extends BoltUnitTest
         $app = $this->getApp();
         $this->addDefaultUser($app);
 
-        $logger = $this->getMock('\Bolt\Logger\FlashLogger', ['info']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('info')
             ->with($this->equalTo("A password reset link has been sent to 'sneakykoala'."));
-        $app['logger.flash'] = $logger;
+        $this->setService('logger.flash', $logger);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordRequest('sneakykoala', '8.8.8.8');
+        $result = $password->resetPasswordRequest('sneakykoala', '8.8.8.8', $event);
 
         $this->assertFalse($result);
     }
@@ -177,20 +190,21 @@ class PasswordTest extends BoltUnitTest
         $this->addDefaultUser($app);
         $app['config']->set('general/mailoptions', null);
 
-        $logger = $this->getMock('\Bolt\Logger\FlashLogger', ['error']);
+        $logger = $this->getMockFlashLogger();
         $logger->expects($this->atLeastOnce())
-            ->method('error')
+            ->method('danger')
             ->with($this->equalTo("The email configuration setting 'mailoptions' hasn't been set. Bolt may be unable to send password reset."));
-        $app['logger.flash'] = $logger;
+        $this->setService('logger.flash', $logger);
 
-        $mailer = $this->getMock('\Swift_Mailer', array('send'), array($app['swiftmailer.transport']));
+        $mailer = $this->getMockSwiftMailer();
         $mailer->expects($this->atLeastOnce())
             ->method('send')
             ->will($this->returnValue(true));
-        $app['mailer'] = $mailer;
+        $this->setService('mailer', $mailer);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordRequest('admin', '8.8.8.8');
+        $result = $password->resetPasswordRequest('admin', '8.8.8.8', $event);
 
         $this->assertTrue($result);
     }
@@ -201,20 +215,21 @@ class PasswordTest extends BoltUnitTest
         $this->addDefaultUser($app);
         $app['config']->set('general/mailoptions', ['transport' => 'smtp', 'spool' => true, 'host' => 'localhost', 'port' => '25']);
 
-        $logger = $this->getMock('\Bolt\Logger\FlashLogger', ['error']);
+        $logger = $this->getMockFlashLogger();
         $logger->expects($this->never())
             ->method('error')
             ->with($this->equalTo("A password reset link has been sent to 'sneakykoala'."));
-        $app['logger.flash'] = $logger;
+        $this->setService('logger.flash', $logger);
 
-        $mailer = $this->getMock('\Swift_Mailer', array('send'), array($app['swiftmailer.transport']));
+        $mailer = $this->getMockSwiftMailer();
         $mailer->expects($this->atLeastOnce())
             ->method('send')
             ->will($this->returnValue(true));
-        $app['mailer'] = $mailer;
+        $this->setService('mailer', $mailer);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordRequest('admin', '8.8.8.8');
+        $result = $password->resetPasswordRequest('admin', '8.8.8.8', $event);
 
         $this->assertTrue($result);
     }
@@ -225,26 +240,27 @@ class PasswordTest extends BoltUnitTest
         $this->addDefaultUser($app);
         $app['config']->set('general/mailoptions', ['transport' => 'smtp', 'spool' => true, 'host' => 'localhost', 'port' => '25']);
 
-        $logger = $this->getMock('\Bolt\Logger\FlashLogger', ['error']);
+        $logger = $this->getMockFlashLogger();
         $logger->expects($this->atLeastOnce())
             ->method('error')
             ->with($this->equalTo('Failed to send password request. Please check the email settings.'));
-        $app['logger.flash'] = $logger;
+        $this->setService('logger.flash', $logger);
 
-        $logger = $this->getMock('\Monolog\Logger', ['error'], ['testlogger']);
+        $logger = $this->getMockMonolog();
         $logger->expects($this->atLeastOnce())
             ->method('error')
             ->with($this->equalTo("Failed to send password request sent to 'Admin'."));
-        $app['logger.system'] = $logger;
+        $this->setService('logger.system', $logger);
 
-        $mailer = $this->getMock('\Swift_Mailer', array('send'), array($app['swiftmailer.transport']));
+        $mailer = $this->getMockSwiftMailer();
         $mailer->expects($this->atLeastOnce())
             ->method('send')
             ->will($this->returnValue(false));
-        $app['mailer'] = $mailer;
+        $this->setService('mailer', $mailer);
 
+        $event = new AccessControlEvent(Request::createFromGlobals());
         $password = new Password($app);
-        $result = $password->resetPasswordRequest('admin', '8.8.8.8');
+        $result = $password->resetPasswordRequest('admin', '8.8.8.8', $event);
 
         $this->assertTrue($result);
     }

@@ -1,23 +1,25 @@
 <?php
+
 namespace Bolt\Storage\Field;
 
 /**
  * Class to manage instances of fields and instantiate the defaults.
  *
+ * @deprecated Deprecated since 3.0, to be removed in 4.0 see src/Storage/FieldManager
+ *
  * @author Ross Riley <riley.ross@gmail.com>
  **/
-
 class Manager
 {
     protected $fields = [];
 
     protected $defaults = [
-        'text', 'integer', 'float', 'geolocation', 'imagelist', 'image', 'file', 'filelist', 'video', 'hidden', 'html',
-        'textarea', 'datetime', 'date', 'select', 'templateselect', 'templatefields', 'markdown', 'checkbox', 'slug',
-        'repeater',
+        'text', 'integer', 'float', 'geolocation', 'imagelist', 'image', 'file', 'filelist', 'oembed', 'video', 'hidden',
+        'html', 'textarea', 'datetime', 'date', 'select', 'templateselect', 'templatefields', 'markdown', 'checkbox',
+        'slug', 'repeater', 'block',
     ];
 
-    protected $dummyFields = ['repeater'];
+    protected $dummyFields = ['repeater', 'block'];
 
     public function __construct()
     {
@@ -46,9 +48,9 @@ class Manager
     {
         if ($this->has($name)) {
             return $this->fields[$name];
-        } else {
-            return false;
         }
+
+        return false;
     }
 
     public function getDatabaseField($field)
@@ -62,6 +64,6 @@ class Manager
 
     public function has($field)
     {
-        return (isset($this->fields[$field]) || in_array($field, $this->dummyFields));
+        return isset($this->fields[$field]) || in_array($field, $this->dummyFields);
     }
 }

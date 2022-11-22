@@ -3,6 +3,7 @@
 namespace Bolt\Storage\Query\Handler;
 
 use Bolt\Storage\Query\ContentQueryParser;
+use Bolt\Storage\Query\QueryResultset;
 
 /**
  *  Handler for queries requested with the random modifier.
@@ -25,6 +26,6 @@ class RandomQueryHandler
             $contentQuery->setDirective('order', 'RANDOM()');
         }
 
-        return call_user_func_array($contentQuery->getHandler('select'), [$contentQuery]);
+        return call_user_func($contentQuery->getHandler('select'), $contentQuery);
     }
 }

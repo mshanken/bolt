@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Tests\Helper;
 
 use Bolt\Helpers\Input;
@@ -24,13 +25,14 @@ class InputTest extends BoltUnitTest
         // Test on array
         $vals = [
            'first'  => "test\r\n",
-           'second' => "test\t"
+           'second' => "test\t",
         ];
         $this->assertEquals(['first' => 'test  ', 'second' => 'test    '], Input::cleanPostedData($vals, false, true));
     }
 }
 
 // Allows us to test magic quotes stuff
+
 namespace Bolt\Helpers;
 
 function get_magic_quotes_gpc()

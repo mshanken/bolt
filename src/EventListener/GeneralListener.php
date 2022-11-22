@@ -1,14 +1,13 @@
 <?php
+
 namespace Bolt\EventListener;
 
 use Bolt\Controller\Zone;
-use Bolt\Translation\Translator as Trans;
 use Silex\Application;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\FilterResponseEvent;
-use Symfony\Component\HttpKernel\Event\GetResponseEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
@@ -32,19 +31,6 @@ class GeneralListener implements EventSubscriberInterface
     }
 
     /**
-     * Kernel request listener callback.
-     *
-     * @param GetResponseEvent $event
-     */
-    public function onKernelRequest(GetResponseEvent $event)
-    {
-        $request = $event->getRequest();
-
-        $this->mailConfigCheck($request);
-        $this->app['access_control']->setRequest($request);
-    }
-
-    /**
      * Kernel response listener callback.
      *
      * @param FilterResponseEvent $event
@@ -55,29 +41,6 @@ class GeneralListener implements EventSubscriberInterface
         $response = $event->getResponse();
 
         $this->setFrameOptions($request, $response);
-    }
-
-    /**
-     * No Mail transport has been set. We should gently nudge the user to set
-     * the mail configuration.
-     *
-     * For now, we only pester the user, if an extension needs to be able to
-     * send mail, but it's not been set up.
-     *
-     * @see: the issue at https://github.com/bolt/bolt/issues/2908
-     *
-     * @param Request $request
-     */
-    protected function mailConfigCheck(Request $request)
-    {
-        if (!$request->hasPreviousSession()) {
-            return;
-        }
-
-        if ($this->app['users']->getCurrentuser() && !$this->app['config']->get('general/mailoptions') && $this->app['extensions']->hasMailSenders()) {
-            $error = "One or more installed extensions need to be able to send email. Please set up the 'mailoptions' in config.yml.";
-            $this->app['logger.flash']->error(Trans::__($error));
-        }
     }
 
     /**
@@ -103,7 +66,6 @@ class GeneralListener implements EventSubscriberInterface
     public static function getSubscribedEvents()
     {
         return [
-            KernelEvents::REQUEST  => ['onKernelRequest', 31], // Right after route is matched
             KernelEvents::RESPONSE => 'onResponse',
         ];
     }

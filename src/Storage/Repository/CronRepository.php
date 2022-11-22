@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Storage\Repository;
 
 use Bolt\Storage\Repository;
@@ -10,11 +11,11 @@ use Doctrine\DBAL\Query\QueryBuilder;
 class CronRepository extends Repository
 {
     /**
-     * Fetches the next run time for a named interval eg: cron.Hourly | cron.Daily
+     * Fetches the next run time for a named interval eg: cron.Hourly, or cron.Daily.
      *
      * @param $interimName
      *
-     * @return \Bolt\Storage\Entity\Cron
+     * @return \Bolt\Storage\Entity\Cron|false
      */
     public function getNextRunTime($interimName)
     {
@@ -32,16 +33,12 @@ class CronRepository extends Repository
      */
     public function queryNextRunTime($interimName)
     {
-        /** @deprecated Deprecated since 3.0, to be removed in 4.0. */
-        $oldname = strtolower(str_replace('cron.', '', $interimName));
-
         $qb = $this->createQueryBuilder();
         $qb->select('id, lastrun, interim')
             ->where('interim = :interim')
-            ->orWhere('interim = :oldname')
             ->orderBy('lastrun', 'DESC')
             ->setParameter('interim', $interimName)
-            ->setParameter('oldname', $oldname);
+        ;
 
         return $qb;
     }

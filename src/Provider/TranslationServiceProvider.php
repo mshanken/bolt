@@ -2,26 +2,94 @@
 
 namespace Bolt\Provider;
 
-use Bolt\Library as Lib;
+use Bolt\Common\Thrower;
+use Pimple\Container;
+use Pimple\ServiceProviderInterface;
 use Silex;
 use Silex\Application;
-use Silex\ServiceProviderInterface;
 use Symfony\Component\Translation\Loader as TranslationLoader;
 
-class TranslationServiceProvider implements ServiceProviderInterface
+class TranslationServiceProvider implements ServiceProviderInterface, Silex\Api\BootableProviderInterface
 {
-    public function register(Application $app)
+    public function register(Container $app)
     {
         if (!isset($app['translator'])) {
             $app->register(
                 new Silex\Provider\TranslationServiceProvider(),
                 [
-                    'translator.cache_dir' => $app['resources']->getPath('cache/trans'),
-                    'locale_fallbacks'     => ['en_GB', 'en'],
+                    'locale_fallbacks' => ['en_GB', 'en'],
                 ]
             );
         }
 
+        $previousLocale = isset($app['locale']) ? $app->raw('locale') : null;
+        $app['locale'] = function ($app) use ($previousLocale) {
+            if (($locales = $app['config']->get('general/locale')) !== null) {
+                $locales = (array) $locales;
+
+                return reset($locales);
+            }
+
+            return $previousLocale;
+        };
+
+        $app['translator.caching'] = function ($app) {
+            return (bool) $app['config']->get('general/caching/translations');
+        };
+
+        $app['translator.cache_dir'] = function ($app) {
+            if ($app['translator.caching'] === false) {
+                return null;
+            }
+
+            return $app['path_resolver']->resolve('%cache%/trans');
+        };
+
+        $app['translator'] = $app->extend(
+            'translator',
+            function ($translator, $app) {
+                foreach ($app['translator.loaders'] as $format => $loader) {
+                    /**@var \Symfony\Component\Translation\Translator $translator */
+                    $translator->addLoader($format, $loader);
+                }
+
+                return $translator;
+            }
+        );
+
+        $app['translator.loaders'] = function () {
+            return [
+                'yml' => new TranslationLoader\YamlFileLoader(),
+                'xlf' => new TranslationLoader\XliffFileLoader(),
+            ];
+        };
+
+        $app['translator.resources'] = $app->extend(
+            'translator.resources',
+            function (array $resources, $app) {
+                $locale = $app['locale'];
+
+                $resources = array_merge($resources, static::addResources($app, $locale));
+
+                foreach ($app['locale_fallbacks'] as $fallback) {
+                    if ($locale !== $fallback) {
+                        $resources = array_merge($resources, static::addResources($app, $fallback));
+                    }
+                }
+
+                return $resources;
+            }
+        );
+
+        // for javascript datetime calculations, timezone offset. e.g. "+02:00"
+        $app['timezone_offset'] = date('P');
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function boot(Application $app)
+    {
         $locales = (array) $app['config']->get('general/locale');
 
         // Add fallback locales to list if they are not already there
@@ -33,79 +101,55 @@ class TranslationServiceProvider implements ServiceProviderInterface
         // Set locales for native php...not sure why?
         setlocale(LC_ALL, $locales);
 
-        // Set the default timezone if provided in the Config
-        date_default_timezone_set($app['config']->get('general/timezone') ?: ini_get('date.timezone') ?: 'UTC');
-
-        // for javascript datetime calculations, timezone offset. e.g. "+02:00"
-        $app['timezone_offset'] = date('P');
-    }
-
-    /**
-     * Bootstraps the application.
-     *
-     * This method is called after all services are registers
-     * and should be used for "dynamic" configuration (whenever
-     * a service must be requested).
-     *
-     * @param \Silex\Application $app
-     */
-    public function boot(Application $app)
-    {
-        if (isset($app['translator'])) {
-            $app['translator']->addLoader('yml', new TranslationLoader\YamlFileLoader());
-            $app['translator']->addLoader('xlf', new TranslationLoader\XliffFileLoader());
-
-            static::addResources($app, $app['locale']);
-
-            // Load fallbacks
-            foreach ($app['locale_fallbacks'] as $fallback) {
-                if ($app['locale'] !== $fallback) {
-                    static::addResources($app, $fallback);
-                }
-            }
-        }
+        $this->setDefaultTimezone($app);
     }
 
     /**
      * Adds all resources that belong to a locale.
      *
-     * @param Application $app
-     * @param string      $locale
+     * @param Container $app
+     * @param string    $locale
+     *
+     * @return array
      */
-    public static function addResources(Application $app, $locale)
+    public static function addResources(Container $app, $locale)
     {
         // Directories to look for translation file(s)
         $transDirs = array_unique(
             [
-                $app['resources']->getPath("app/resources/translations/{$locale}"),
-                $app['resources']->getPath("root/app/resources/translations/{$locale}"),
+                $app['path_resolver']->resolve('%site%/app/translation/'),
+                $app['path_resolver']->resolve("%site%/app/translation/{$locale}"),
+                $app['path_resolver']->resolve("%bolt%/app/translations/{$locale}"),
+                $app['path_resolver']->resolve("%root%/app/translations/{$locale}"), // Will be done better in v3.4
             ]
         );
 
         $needsSecondPass = true;
+
+        $resources = [];
 
         foreach ($transDirs as $transDir) {
             if (!is_dir($transDir) || !is_readable($transDir)) {
                 continue;
             }
             $iterator = new \DirectoryIterator($transDir);
-            /**
-             * @var \SplFileInfo $fileInfo
-             */
+            /** @var \SplFileInfo $fileInfo */
             foreach ($iterator as $fileInfo) {
-                $ext = Lib::getExtension((string) $fileInfo);
+                $ext = pathinfo($fileInfo, PATHINFO_EXTENSION);
                 if (!$fileInfo->isFile() || !in_array($ext, ['yml', 'xlf'], true)) {
                     continue;
                 }
                 list($domain) = explode('.', $fileInfo->getFilename());
-                $app['translator']->addResource($ext, $fileInfo->getRealPath(), $locale, $domain);
+                $resources[] = [$ext, $fileInfo->getRealPath(), $locale, $domain];
                 $needsSecondPass = false;
             }
         }
 
         if ($needsSecondPass && strlen($locale) === 5) {
-            static::addResources($app, substr($locale, 0, 2));
+            $resources = array_merge($resources, static::addResources($app, substr($locale, 0, 2)));
         }
+
+        return $resources;
     }
 
     /**
@@ -150,5 +194,32 @@ class TranslationServiceProvider implements ServiceProviderInterface
         }
 
         return $locales;
+    }
+
+    protected function setDefaultTimezone(Application $app)
+    {
+        if (($timezone = $app['config']->get('general/timezone')) !== null) {
+            date_default_timezone_set($timezone);
+
+            return;
+        }
+
+        // PHP 7.0+ doesn't emit warning for no timezone set.
+        if (PHP_MAJOR_VERSION > 5) {
+            return;
+        }
+
+        // Run check to see if a default timezone has been set
+        try {
+            Thrower::call('date_default_timezone_get');
+            $hasDefault = true;
+        } catch (\ErrorException $e) {
+            $hasDefault = false;
+        }
+
+        // If no default, set to UTC to prevent default not defined warnings
+        if (!$hasDefault) {
+            date_default_timezone_set('UTC');
+        }
     }
 }

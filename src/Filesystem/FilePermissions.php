@@ -2,8 +2,9 @@
 
 namespace Bolt\Filesystem;
 
-use Bolt\Library as Lib;
-use Silex\Application;
+use Bolt\Common\Ini;
+use Bolt\Config;
+use Bolt\Filesystem\Exception\IOException;
 
 /**
  * Use to check if an access to a file is allowed.
@@ -12,30 +13,32 @@ use Silex\Application;
  */
 class FilePermissions
 {
-    /** @var \Silex\Application */
-    protected $app;
+    /** @var Config */
+    protected $config;
     /** @var string[] List of Filesystem prefixes that are editable. */
     protected $allowedPrefixes = [];
     /** @var array Regex list represented editable resources. */
     protected $allowed = [];
     /** @var array Regex list represented resources forbidden for edition. */
     protected $blocked = [];
-    /** @var double Maximum upload size allowed by PHP, in bytes. */
+    /** @var float Maximum upload size allowed by PHP, in bytes. */
     protected $maxUploadSize;
 
     /**
      * Constructor, initialize filters rules.
      *
-     * @param Application $app
+     * @param Config $config
      */
-    public function __construct(Application $app)
+    public function __construct(Config $config)
     {
-        $this->app = $app;
+        $this->config = $config;
 
         $this->allowedPrefixes = [
             'config',
+            'extensions_config',
             'files',
             'theme',
+            'themes',
         ];
 
         $this->blocked = [
@@ -84,19 +87,25 @@ class FilePermissions
      *
      * @param string $originalFilename
      *
+     * @throws IOException
+     *
      * @return bool
      */
     public function allowedUpload($originalFilename)
     {
+        // Check if file_uploads ini directive is true
+        if (Ini::getBool('file_uploads') === false) {
+            throw new IOException('File uploads are not allowed, check the file_uploads ini directive.');
+        }
         // no UNIX-hidden files
         if ($originalFilename[0] === '.') {
             return false;
         }
         // only whitelisted extensions
-        $extension = strtolower(Lib::getExtension($originalFilename));
+        $extension = pathinfo($originalFilename, PATHINFO_EXTENSION);
         $allowedExtensions = $this->getAllowedUploadExtensions();
 
-        return (in_array($extension, $allowedExtensions));
+        return in_array($extension, $allowedExtensions);
     }
 
     /**
@@ -106,22 +115,26 @@ class FilePermissions
      */
     public function getAllowedUploadExtensions()
     {
-        return $this->app['config']->get('general/accept_file_types');
+        return $this->config->get('general/accept_file_types');
     }
 
     /**
      * Get the maximum upload size the server is configured to accept.
      *
-     * @return double
+     * @return float
      */
     public function getMaxUploadSize()
     {
         if (!isset($this->maxUploadSize)) {
-            $size = Lib::filesizeToBytes(ini_get('post_max_size'));
+            $size = Ini::getBytes('post_max_size');
 
-            $uploadMax = Lib::filesizeToBytes(ini_get('upload_max_filesize'));
+            $uploadMax = Ini::getBytes('upload_max_filesize');
             if (($uploadMax > 0) && ($uploadMax < $size)) {
                 $size = $uploadMax;
+            } else {
+                // This reduces the reported max size by a small amount to take account of the difference between
+                // the uploaded file size and the size of the eventual post including other data.
+                $size *= 0.995;
             }
 
             $this->maxUploadSize = $size;
@@ -137,6 +150,24 @@ class FilePermissions
      */
     public function getMaxUploadSizeNice()
     {
-        return Lib::formatFilesize($this->getMaxUploadSize());
+        return $this->formatFilesize($this->getMaxUploadSize());
+    }
+
+    /**
+     * Format a file size like '10.3 KiB' or '2.5 MiB'.
+     *
+     * @param integer $size
+     *
+     * @return string
+     */
+    private function formatFilesize($size)
+    {
+        if ($size > 1024 * 1024) {
+            return sprintf('%0.2f MiB', ($size / 1024 / 1024));
+        } elseif ($size > 1024) {
+            return sprintf('%0.2f KiB', ($size / 1024));
+        } else {
+            return $size . ' B';
+        }
     }
 }

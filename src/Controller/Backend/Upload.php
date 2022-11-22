@@ -2,9 +2,8 @@
 
 namespace Bolt\Controller\Backend;
 
+use Silex\Application;
 use Silex\ControllerCollection;
-use Sirius\Upload\Result\Collection;
-use Sirius\Upload\Result\File;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -21,9 +20,22 @@ class Upload extends BackendBase
         $c->match('/{namespace}', 'uploadNamespace')
             ->before([$this, 'before'])
             ->value('namespace', 'files')
-            ->bind('upload');
+            ->bind('upload')
+        ;
 
         return $c;
+    }
+
+    /**
+     * @param Request     $request
+     * @param Application $app
+     * @param null        $roleRoute
+     *
+     * @return null|\Symfony\Component\HttpFoundation\RedirectResponse
+     */
+    public function before(Request $request, Application $app, $roleRoute = null)
+    {
+        return parent::before($request, $app, 'files:uploads');
     }
 
     /**
@@ -40,11 +52,10 @@ class Upload extends BackendBase
             // Use custom handlers
             if (is_array($handler)) {
                 return $this->processCustomUploadHandler($request, $handler);
-            } else {
-                list($namespace, $prefix) = $this->parser($handler);
-                $this->app['upload.namespace'] = $namespace;
-                $this->app['upload.prefix'] = $prefix;
             }
+            list($namespace, $prefix) = $this->parser($handler);
+            $this->app['upload.namespace'] = $namespace;
+            $this->app['upload.prefix'] = $prefix;
         } else {
             $namespace = $this->app['upload.namespace'];
         }
@@ -89,7 +100,7 @@ class Upload extends BackendBase
     {
         $filesToProcess = $this->getFilesToProcess($request, $namespace, $files);
 
-        /** @var \Sirius\Upload\Result\Collection|\Sirius\Upload\Result\File $result */
+        /** @var \Sirius\Upload\Result\Collection $result */
         $result = $this->app['upload']->process($filesToProcess);
 
         if ($result->isValid()) {
@@ -97,20 +108,12 @@ class Upload extends BackendBase
             $result->confirm();
 
             $successfulFiles = [];
-            if ($result instanceof File) {
-                $successfulFiles = [$result->name];
-            } elseif ($result instanceof Collection) {
-                $successfulFiles = [];
-                foreach ($result as $resultFile) {
-                    $successfulFiles[] = [
-                        'url'  => $namespace . '/' . $resultFile->name,
-                        'name' => $resultFile->name,
-                    ];
-                }
+            foreach ($result as $resultFile) {
+                $successfulFiles[] = $this->filesystem()->toJs($namespace . '://' . $resultFile->name);
             }
 
             return $successfulFiles;
-        } else {
+        }
             // The file that was saved during process() has a .lock file attached
             // and can now be cleared, in the case where form processing fails
             try {
@@ -119,18 +122,16 @@ class Upload extends BackendBase
                 // It's an error state anyway
             }
 
-            $errorFiles = [];
-            foreach ($result as $resultFile) {
-                $errors = $resultFile->getMessages();
-                $errorFiles[] = [
-                    'url'   => $namespace . '/' . $resultFile->original_name,
+        $errorFiles = [];
+        foreach ($result as $resultFile) {
+            $errors = $resultFile->getMessages();
+            $errorFiles[] = [
                     'name'  => $resultFile->original_name,
                     'error' => (string) $errors[0],
                 ];
-            }
-
-            return $errorFiles;
         }
+
+        return $errorFiles;
     }
 
     /**
@@ -158,7 +159,7 @@ class Upload extends BackendBase
             if ($file instanceof UploadedFile) {
                 $filesToProcess[] = [
                     'name'     => $file->getClientOriginalName(),
-                    'tmp_name' => $file->getPathName(),
+                    'tmp_name' => $file->getPathname(),
                 ];
             } else {
                 $filesToProcess[] = $file;
@@ -185,13 +186,13 @@ class Upload extends BackendBase
         $this->app['upload.prefix'] = $prefix;
 
         // Do the upload
-        $result = $this->handleUploadFiles($request, $namespace);
+        $fullResult = $this->handleUploadFiles($request, $namespace);
 
         array_shift($handler);
         $original = $namespace;
 
-        if (count($result)) {
-            $result = $result[0];
+        if (count($fullResult)) {
+            $result = $fullResult[0];
             foreach ($handler as $copy) {
                 list($namespace, $prefix) = $this->parser($copy);
 
@@ -202,6 +203,6 @@ class Upload extends BackendBase
             }
         }
 
-        return $this->json($result, Response::HTTP_OK, ['Content-Type' => 'text/plain']);
+        return $this->json($fullResult, Response::HTTP_OK, ['Content-Type' => 'text/plain']);
     }
 }

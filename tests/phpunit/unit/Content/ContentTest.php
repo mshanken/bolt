@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Tests\Content;
 
 use Bolt\Legacy\Content;
@@ -26,131 +27,22 @@ class ContentTest extends BoltUnitTest
         $this->assertEquals('{"file":"image1.jpg","title":"Test image"}', $values['image']);
     }
 
-    public function testsetValues()
+    public function testGetRenderedValue()
     {
-    }
+        $app = $this->getApp();
+        $mockContent = $this->getMockBuilder(Content::class)
+            ->setConstructorArgs([$app, 'pages'])
+            ->setMethods(['getDecodedValue'])
+            ->getMock()
+        ;
+        $mockContent
+            ->expects($this->atLeastOnce())
+            ->method('getDecodedValue')
+            ->with('title')
+        ;
 
-    public function testsetValue()
-    {
-    }
-
-    public function testsetFromPost()
-    {
-    }
-
-    public function testsetContenttype()
-    {
-    }
-
-    public function testsetTaxonomy()
-    {
-    }
-
-    public function testsortTaxonomy()
-    {
-    }
-
-    public function testsetRelation()
-    {
-    }
-
-    public function testgetTaxonomyType()
-    {
-    }
-
-    public function testsetGroup()
-    {
-    }
-
-    public function testgetDecodedValue()
-    {
-    }
-
-    public function testpreParse()
-    {
-    }
-
-    public function testgetTemplateContext()
-    {
-    }
-
-    public function testget()
-    {
-    }
-
-    public function testgetTitle()
-    {
-    }
-
-    public function testgetTitleColumnName()
-    {
-    }
-
-    public function testgetImage()
-    {
-    }
-
-    public function testgetReference()
-    {
-    }
-
-    public function testeditlink()
-    {
-    }
-
-    public function testlink()
-    {
-    }
-
-    public function testprevious()
-    {
-    }
-
-    public function testnext()
-    {
-    }
-
-    public function testrelated()
-    {
-    }
-
-    public function testfieldinfo()
-    {
-    }
-
-    public function testfieldtype()
-    {
-    }
-
-    public function testexcerpt()
-    {
-    }
-
-    public function testrss_safe()
-    {
-    }
-
-    public function testweighSearchResult()
-    {
-    }
-
-    public function testgetSearchResultWeight()
-    {
-    }
-
-    public function testoffsetExists()
-    {
-    }
-
-    public function testoffsetGet()
-    {
-    }
-
-    public function testoffsetSet()
-    {
-    }
-
-    public function testoffsetUnset()
-    {
+        /** @var \Bolt\Legacy\Content $mockContent */
+        $mockContent->setValue('title', 'koala');
+        $mockContent->getRenderedValue('title');
     }
 }

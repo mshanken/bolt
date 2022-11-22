@@ -1,19 +1,30 @@
 <?php
+
 namespace Bolt\Controller;
 
+use Bolt\AccessControl\Token\Token;
+use Bolt\Response\TemplateResponse;
+use Bolt\Response\TemplateView;
 use Bolt\Routing\DefaultControllerClassAwareInterface;
 use Bolt\Storage\Entity;
+use Bolt\Storage\Repository;
+use Bolt\Translation\Translator as Trans;
 use Doctrine\DBAL\Exception\TableNotFoundException;
+use Silex\Api\ControllerProviderInterface;
 use Silex\Application;
 use Silex\ControllerCollection;
-use Silex\ControllerProviderInterface;
+use Symfony\Component\Form\Extension\Core\Type\FormType;
 use Symfony\Component\Form\Form;
 use Symfony\Component\Form\FormBuilderInterface;
 use Symfony\Component\Form\FormTypeInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Security\Csrf\CsrfToken;
+use Twig\Template as Template;
 
 /**
  * Base class for all controllers which mainly provides shortcut methods for
@@ -44,9 +55,11 @@ abstract class Base implements ControllerProviderInterface
     /**
      * Shortcut to abort the current request by sending a proper HTTP error.
      *
-     * @param integer $statusCode The HTTP status code
-     * @param string  $message    The status message
-     * @param array   $headers    An array of HTTP headers
+     * @param int    $statusCode The HTTP status code
+     * @param string $message    The status message
+     * @param array  $headers    An array of HTTP headers
+     *
+     * @throws HttpExceptionInterface
      */
     protected function abort($statusCode, $message = '', array $headers = [])
     {
@@ -54,17 +67,53 @@ abstract class Base implements ControllerProviderInterface
     }
 
     /**
-     * Renders a template
+     * Renders a template.
      *
-     * @param string $template  the template name
-     * @param array  $variables array of context variables
-     * @param array  $globals   array of global variables
+     * @param string|string[] $template Template name(s)
+     * @param array           $context  Context variables
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return TemplateResponse|TemplateView
      */
-    protected function render($template, array $variables = [], array $globals = [])
+    protected function render($template, array $context = [])
     {
-        return $this->app['render']->render($template, $variables, $globals);
+        $twig = $this->app['twig'];
+        /** @var Template $template */
+        $template = $twig->resolveTemplate($template);
+
+        $this->addResolvedRoute($context, $template->getTemplateName());
+
+        return new TemplateView($template->getTemplateName(), $context);
+    }
+
+    /**
+     * Update the route attributes to change the canonical URL generated.
+     *
+     * @param array  $context
+     * @param string $template
+     */
+    private function addResolvedRoute(array $context, $template)
+    {
+        if (!isset($context['record'])) {
+            return;
+        }
+
+        $content = $context['record'];
+        $request = $this->app['request_stack']->getCurrentRequest();
+
+        $homepage = $this->getOption('theme/homepage') ?: $this->getOption('general/homepage');
+        $uriID = $content->contenttype['singular_slug'] . '/' . $content->get('id');
+        $uriSlug = $content->contenttype['singular_slug'] . '/' . $content->get('slug');
+
+        if (($uriID === $homepage || $uriSlug === $homepage) && ($template === $this->getOption('general/homepage_template'))) {
+            $request->attributes->add(['_route' => 'homepage', '_route_params' => []]);
+
+            return;
+        }
+
+        list($routeName, $routeParams) = $content->getRouteNameAndParams();
+        if ($routeName) {
+            $request->attributes->add(['_route' => $routeName, '_route_params' => $routeParams]);
+        }
     }
 
     /**
@@ -90,7 +139,7 @@ abstract class Base implements ControllerProviderInterface
      *
      * @return Form
      */
-    protected function createForm($type = 'form', $data = null, array $options = [])
+    protected function createForm($type = FormType::class, $data = null, array $options = [])
     {
         return $this->app['form.factory']->create($type, $data, $options);
     }
@@ -104,17 +153,17 @@ abstract class Base implements ControllerProviderInterface
      *
      * @return FormBuilderInterface The form builder
      */
-    protected function createFormBuilder($type = 'form', $data = null, array $options = [])
+    protected function createFormBuilder($type = FormType::class, $data = null, array $options = [])
     {
         return $this->app['form.factory']->createBuilder($type, $data, $options);
     }
 
     /**
-     * Shortcut for {@see UrlGeneratorInterface::generate}
+     * Shortcut for {@see UrlGeneratorInterface::generate}.
      *
      * @param string $name          The name of the route
      * @param array  $params        An array of parameters
-     * @param bool   $referenceType The type of reference to be generated (one of the constants)
+     * @param int    $referenceType The type of reference to be generated (one of the constants)
      *
      * @return string
      */
@@ -156,7 +205,7 @@ abstract class Base implements ControllerProviderInterface
     /**
      * Returns the Entity Manager.
      *
-     * @return \Bolt\Storage\EntityManager
+     * @return \Bolt\Storage\EntityManager|\Bolt\Legacy\Storage
      */
     protected function storage()
     {
@@ -174,7 +223,7 @@ abstract class Base implements ControllerProviderInterface
     }
 
     /**
-     * Gets the flash logger
+     * Gets the flash logger.
      *
      * @return \Bolt\Logger\FlashLoggerInterface
      */
@@ -194,21 +243,39 @@ abstract class Base implements ControllerProviderInterface
     }
 
     /**
-     * Shortcut for {@see \Bolt\Users::checkAntiCSRFToken}
+     * Validates CSRF token and throws HttpException if not.
      *
-     * @param string $token
+     * @param string|null $value the token value or null to use "bolt_csrf_token" parameter from request
+     * @param string      $id    the token ID
+     *
+     * @throws HttpExceptionInterface
+     */
+    protected function validateCsrfToken($value = null, $id = 'bolt')
+    {
+        if (!$this->isCsrfTokenValid($value, $id)) {
+            $this->abort(Response::HTTP_BAD_REQUEST, Trans::__('general.phrase.something-went-wrong'));
+        }
+    }
+
+    /**
+     * Check if csrf token is valid.
+     *
+     * @param string|null $value the token value or null to use "bolt_csrf_token" parameter from request
+     * @param string      $id    the token ID
      *
      * @return bool
      */
-    protected function checkAntiCSRFToken($token = '')
+    protected function isCsrfTokenValid($value = null, $id = 'bolt')
     {
-        return $this->users()->checkAntiCSRFToken($token);
+        $token = new CsrfToken($id, $value ?: $this->app['request_stack']->getCurrentRequest()->get('bolt_csrf_token', ''));
+
+        return $this->app['csrf.token_manager']->isTokenValid($token);
     }
 
     /**
      * Gets the \Bolt\Extensions object.
      *
-     * @return \Bolt\Extensions
+     * @return \Bolt\Extension\Manager
      */
     protected function extensions()
     {
@@ -238,7 +305,7 @@ abstract class Base implements ControllerProviderInterface
     /**
      * Check to see if the user table exists and has records.
      *
-     * @return boolean
+     * @return bool
      */
     protected function hasUsers()
     {
@@ -257,38 +324,41 @@ abstract class Base implements ControllerProviderInterface
     /**
      * Return current user or user by ID.
      *
-     * @param integer|string|null $userId
+     * @param int|string|null $userId
      *
-     * @return Entity\Users|null
+     * @return Entity\Users|false
      */
     protected function getUser($userId = null)
     {
         if ($userId === null) {
+            /** @var Token $sessionAuth */
             if ($this->session()->isStarted() && $sessionAuth = $this->session()->get('authentication')) {
                 return $sessionAuth->getUser();
             }
 
-            return;
+            return false;
         }
-        $repo = $this->storage()->getRepository('Bolt\Storage\Entity\Users');
+        /** @var Repository\UsersRepository $repo */
+        $repo = $this->storage()->getRepository(Entity\Users::class);
 
         return $repo->getUser($userId);
     }
 
     /**
-     * Shortcut for {@see \Bolt\AccessControl\Permissions::isAllowed}
+     * Shortcut for {@see \Bolt\AccessControl\Permissions::isAllowed}.
      *
-     * @param string       $what
-     * @param mixed        $user        The user to check permissions against.
-     * @param string|null  $contenttype
-     * @param integer|null $contentid
+     * @param string      $what
+     * @param mixed       $user        the user to check permissions against
+     * @param string|null $contenttype
+     * @param int|null    $contentid
      *
-     * @return boolean
+     * @return bool
      */
     protected function isAllowed($what, $user = null, $contenttype = null, $contentid = null)
     {
-        if ($user === null && $user = $this->session()->get('authentication')) {
-            $user = $user->getUser()->toArray();
+        /** @var Token $sessionAuth */
+        if ($user === null && $sessionAuth = $this->session()->get('authentication')) {
+            $user = $sessionAuth->getUser()->toArray();
         }
 
         return $this->app['permissions']->isAllowed($what, $user, $contenttype, $contentid);
@@ -307,18 +377,26 @@ abstract class Base implements ControllerProviderInterface
     }
 
     /**
-     * Shortcut for {@see \Bolt\Storage::getContent}
+     * Shortcut for {@see \Bolt\Legacy\Storage::getContent()}.
      *
-     * @param string $textquery
+     * @param string $textQuery
      * @param array  $parameters
      * @param array  $pager
-     * @param array  $whereparameters
+     * @param array  $whereParameters
      *
      * @return \Bolt\Legacy\Content|\Bolt\Legacy\Content[]
+     *
+     * @see \Bolt\Legacy\Storage::getContent()
      */
-    protected function getContent($textquery, $parameters = [], &$pager = [], $whereparameters = [])
+    protected function getContent($textQuery, $parameters = [], &$pager = [], $whereParameters = [])
     {
-        return $this->storage()->getContent($textquery, $parameters, $pager, $whereparameters);
+        $isLegacy = $this->getOption('general/compatibility/setcontent_legacy', true);
+        if ($isLegacy) {
+            return $this->storage()->getContent($textQuery, $parameters, $pager, $whereParameters);
+        }
+        $params = array_merge($parameters, $whereParameters);
+
+        return  $this->app['query']->getContent($textQuery, $params);
     }
 
     /**
@@ -326,7 +404,7 @@ abstract class Base implements ControllerProviderInterface
      *
      * @param string $slug
      *
-     * @return boolean|array
+     * @return bool|array
      */
     protected function getContentType($slug)
     {
@@ -338,6 +416,8 @@ abstract class Base implements ControllerProviderInterface
      *
      * @param string             $contentTypeSlug
      * @param array|Entity\Users $user
+     *
+     * @return bool[]
      */
     protected function getContentTypeUserPermissions($contentTypeSlug, $user = null)
     {
@@ -354,7 +434,7 @@ abstract class Base implements ControllerProviderInterface
      * @param string $path
      * @param mixed  $default
      *
-     * @return string|integer|array|null
+     * @return string|int|array|null
      */
     protected function getOption($path, $default = null)
     {
@@ -394,13 +474,5 @@ abstract class Base implements ControllerProviderInterface
     protected function createQueryBuilder()
     {
         return $this->app['db']->createQueryBuilder();
-    }
-
-    /**
-     * @return \Bolt\Configuration\ResourceManager
-     */
-    protected function resources()
-    {
-        return $this->app['resources'];
     }
 }

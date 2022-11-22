@@ -6,14 +6,14 @@ use Bolt\Storage\Query\SearchConfig;
 use Doctrine\DBAL\Query\QueryBuilder;
 
 /**
- *  Handler to build a fulltext search query for Postgres
+ *  Handler to build a fulltext search query for Postgres.
  */
 class PostgresSearch
 {
     protected $qb;
     protected $config;
     protected $searchWords;
-    protected $contenttype;
+    protected $contentType;
 
     public function __construct(QueryBuilder $qb, SearchConfig $config, array $searchWords)
     {
@@ -24,7 +24,7 @@ class PostgresSearch
 
     public function setContentType($type)
     {
-        $this->contenttype = $type;
+        $this->contentType = $type;
     }
 
     public function getQuery()
@@ -35,8 +35,8 @@ class PostgresSearch
         $sub->select('*');
         $select = [];
 
-        $fieldsToSearch = $this->config->getConfig($this->contenttype);
-        $joins = $this->config->getJoins($this->contenttype);
+        $fieldsToSearch = $this->config->getConfig($this->contentType);
+        $joins = $this->config->getJoins($this->contentType);
         $fieldsToSearch = array_diff_key($fieldsToSearch, array_flip($joins));
 
         $from = $this->qb->getQueryPart('from');
@@ -63,16 +63,16 @@ class PostgresSearch
     public function getWeight($score)
     {
         switch (true) {
-            case ($score >= 75):
+            case $score >= 75:
                 return 'A';
 
-            case ($score >= 50):
+            case $score >= 50:
                 return 'B';
 
-            case ($score >= 25):
+            case $score >= 25:
                 return 'C';
 
-            case ($score < 25):
+            case $score < 25:
                 return 'D';
         }
 

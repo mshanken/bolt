@@ -2,8 +2,10 @@
 
 namespace Bolt\Storage\Database\Schema;
 
+use Bolt\Events\SchemaEvent;
+use Bolt\Events\SchemaEvents;
+use Bolt\Storage\Database\Schema\Table\BaseTable;
 use Doctrine\DBAL\Schema\Schema;
-use Doctrine\DBAL\Schema\Table;
 use Silex\Application;
 
 /**
@@ -13,7 +15,7 @@ use Silex\Application;
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
-class Manager
+class Manager implements SchemaManagerInterface
 {
     /** @var \Doctrine\DBAL\Connection */
     protected $connection;
@@ -29,10 +31,6 @@ class Manager
     /** @var \Silex\Application */
     private $app;
 
-    /** @deprecated Deprecated since 3.0, to be removed in 4.0. */
-    const INTEGRITY_CHECK_INTERVAL    = 1800; // max. validity of a database integrity check, in seconds
-    const INTEGRITY_CHECK_TS_FILENAME = 'dbcheck_ts'; // filename for the check timestamp file
-
     /**
      * Constructor.
      *
@@ -46,22 +44,6 @@ class Manager
     }
 
     /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0. This is a place holder to prevent fatal errors.
-     */
-    public function __call($name, $args)
-    {
-        $this->app['logger.system']->warning('[DEPRECATED]: An extension called an invalid, or removed, integrity checker function: ' . $name, ['event' => 'deprecated']);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0. This is a place holder to prevent fatal errors.
-     */
-    public function __get($name)
-    {
-        $this->app['logger.system']->warning('[DEPRECATED]: An extension called an invalid, or removed integrity, checker property: ' . $name, ['event' => 'deprecated']);
-    }
-
-    /**
      * Get the database name of a table from an alias.
      *
      * @param string $name
@@ -70,15 +52,18 @@ class Manager
      */
     public function getTableName($name)
     {
+        $tableName = null;
         if (isset($this->app['schema.tables'][$name])) {
-            return $this->app['schema.tables'][$name]->getTableName();
+            /** @var BaseTable $table */
+            $table = $this->app['schema.tables'][$name];
+            $tableName = $table->getTableName();
         }
+
+        return $tableName;
     }
 
     /**
-     * Check to see if we have past the time to re-check our schema.
-     *
-     * @return boolean
+     * {@inheritdoc}
      */
     public function isCheckRequired()
     {
@@ -86,14 +71,15 @@ class Manager
     }
 
     /**
-     * Check to see if there is a mismatch in installed versus configured
-     * schemas.
-     *
-     * @return boolean
+     * {@inheritdoc}
      */
     public function isUpdateRequired()
     {
-        $pending = $this->getSchemaComparator()->hasPending();
+        $fromTables = $this->getInstalledTables();
+        $toTables = $this->getSchemaTables();
+        $protectedTableNames = $this->app['schema.content_tables']->keys();
+
+        $pending = $this->getSchemaComparator()->hasPending($fromTables, $toTables, $protectedTableNames);
 
         if (!$pending) {
             $this->getSchemaTimer()->setCheckExpiry();
@@ -109,7 +95,11 @@ class Manager
      */
     public function check()
     {
-        $response = $this->getSchemaComparator()->compare();
+        $fromTables = $this->getInstalledTables();
+        $toTables = $this->getSchemaTables();
+        $protectedTableNames = $this->app['schema.content_tables']->keys();
+
+        $response = $this->getSchemaComparator()->compare($fromTables, $toTables, $protectedTableNames);
         if (!$response->hasResponses()) {
             $this->getSchemaTimer()->setCheckExpiry();
         }
@@ -125,7 +115,11 @@ class Manager
     public function update()
     {
         // Do the initial check
-        $this->getSchemaComparator()->compare();
+        $fromTables = $this->getInstalledTables();
+        $toTables = $this->getSchemaTables();
+        $protectedTableNames = $this->app['schema.content_tables']->keys();
+
+        $this->getSchemaComparator()->compare($fromTables, $toTables, $protectedTableNames, true);
         $response = $this->getSchemaComparator()->getResponse();
         $creates = $this->getSchemaComparator()->getCreates();
         $alters = $this->getSchemaComparator()->getAlters();
@@ -134,9 +128,14 @@ class Manager
         $modifier->createTables($creates, $response);
         $modifier->alterTables($alters, $response);
 
+        $event = new SchemaEvent($creates, $alters);
+        $this->app['dispatcher']->dispatch(SchemaEvents::UPDATE, $event);
+
         // Recheck now that we've processed
-        $this->getSchemaComparator()->compare();
-        if (!$this->getSchemaComparator()->hasPending()) {
+        $fromTables = $this->getInstalledTables();
+        $toTables = $this->getSchemaTables();
+        $this->getSchemaComparator()->compare($fromTables, $toTables, $protectedTableNames);
+        if (!$this->getSchemaComparator()->hasPending($fromTables, $toTables, $protectedTableNames)) {
             $this->getSchemaTimer()->setCheckExpiry();
         }
 
@@ -146,7 +145,7 @@ class Manager
     /**
      * Check if just the users table is present.
      *
-     * @return boolean
+     * @return bool
      */
     public function hasUserTable()
     {
@@ -182,16 +181,20 @@ class Manager
         if ($this->schemaTables !== null) {
             return $this->schemaTables;
         }
+        $builder = $this->app['schema.builder'];
+
+        /** @deprecated Deprecated since 3.0, to be removed in 4.0. */
+        $builder['extensions']->addPrefix($this->app['schema.prefix']);
 
         $schema = new Schema();
         $tables = array_merge(
-            $this->app['schema.builder']['base']->getSchemaTables($schema),
-            $this->app['schema.builder']['content']->getSchemaTables($schema, $this->config),
-            $this->app['schema.builder']['extensions']->getSchemaTables($schema)
+            $builder['base']->getSchemaTables($schema),
+            $builder['content']->getSchemaTables($schema, $this->config),
+            $builder['extensions']->getSchemaTables($schema)
         );
         $this->schema = $schema;
 
-        return $tables;
+        return $this->schemaTables = $tables;
     }
 
     /**
@@ -218,9 +221,9 @@ class Manager
     /**
      * This method allows extensions to register their own tables.
      *
-     * @param callable $generator A generator function that takes the Schema
+     * @param callable $generator a generator function that takes the Schema
      *                            instance and returns a table or an array of
-     *                            tables.
+     *                            tables
      */
     public function registerExtensionTable(callable $generator)
     {

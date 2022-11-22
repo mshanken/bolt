@@ -1,11 +1,20 @@
 <?php
+
 namespace Bolt\Controller\Backend;
 
 use Bolt\Controller\Base;
 use Bolt\Controller\Zone;
+use Bolt\Events\AccessControlEvent;
+use Bolt\Events\AccessControlEvents;
+use Bolt\Storage\Entity;
+use Bolt\Storage\Query\QueryResultset;
+use Bolt\Storage\Repository\UsersRepository;
 use Bolt\Translation\Translator as Trans;
+use Bolt\Version;
+use Doctrine\DBAL\Exception\TableNotFoundException;
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Cookie;
+use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -29,13 +38,13 @@ abstract class BackendBase extends Base
     /**
      * {@inheritdoc}
      */
-    protected function render($template, array $variables = [], array $globals = [])
+    protected function render($template, array $context = [])
     {
-        if (!isset($variables['context'])) {
-            $variables = ['context' => $variables];
+        if (!isset($context['context'])) {
+            $context = ['context' => $context];
         }
 
-        return parent::render($template, $variables, $globals);
+        return parent::render($template, $context);
     }
 
     /**
@@ -45,7 +54,7 @@ abstract class BackendBase extends Base
      * @param Application $app       The application/container
      * @param string      $roleRoute An overriding value for the route name in permission checks
      *
-     * @return null|\Symfony\Component\HttpFoundation\RedirectResponse
+     * @return null|\Symfony\Component\HttpFoundation\RedirectResponse|\Symfony\Component\HttpFoundation\JsonResponse
      */
     public function before(Request $request, Application $app, $roleRoute = null)
     {
@@ -54,27 +63,15 @@ abstract class BackendBase extends Base
 
         $route = $request->get('_route');
 
+        // Initial event
+        $event = new AccessControlEvent($request);
+        $app['dispatcher']->dispatch(AccessControlEvents::ACCESS_CHECK_REQUEST, $event);
+
         // Handle the case where the route doesn't equal the role.
         if ($roleRoute === null) {
-            $roleRoute = $route;
-        }
-
-        // Sanity checks for doubles in in contenttypes. This has to be done
-        // here, because the 'translator' classes need to be initialised.
-        $app['config']->checkConfig();
-
-        // If we had to reload the config earlier on because we detected a
-        // version change, display a notice.
-        if ($app['config']->notify_update) {
-            $notice = Trans::__(
-                "Detected Bolt version change to <b>%VERSION%</b>, and the cache has been cleared. Please <a href=\"%URI%\">check the database</a>, if you haven't done so already.",
-                [
-                    '%VERSION%' => $app->getVersion(),
-                    '%URI%'     => $app['resources']->getUrl('bolt') . 'dbcheck',
-                ]
-            );
-            $app['logger.system']->notice(strip_tags($notice), ['event' => 'config']);
-            $app['logger.flash']->info($notice);
+            $roleRoute = $this->getRoutePermission($route);
+        } else {
+            $roleRoute = $this->getRoutePermission($roleRoute);
         }
 
         // Check for first user set up
@@ -89,10 +86,16 @@ abstract class BackendBase extends Base
         }
 
         // Confirm the user is enabled or bounce them
-        if (($sessionUser = $this->getUser()) && !$sessionUser->getEnabled()) {
-            $app['logger.flash']->error(Trans::__('Your account is disabled. Sorry about that.'));
+        $sessionUser = $this->getUser();
+        if ($sessionUser && !$sessionUser->getEnabled()) {
+            $app['logger.flash']->error(Trans::__('general.phrase.login-account-disabled'));
+            $event->setReason(AccessControlEvents::FAILURE_DISABLED);
+            $event->setUserName($sessionUser->getUsername());
+            $app['dispatcher']->dispatch(AccessControlEvents::ACCESS_CHECK_FAILURE, $event);
 
             return $this->redirectToRoute('logout');
+        } elseif ($sessionUser) {
+            $event->setUserName($sessionUser->getUsername());
         }
 
         // Check if there's at least one 'root' user, and otherwise promote the current user.
@@ -101,16 +104,29 @@ abstract class BackendBase extends Base
         // Most of the 'check if user is allowed' happens here: match the current route to the 'allowed' settings.
         $authCookie = $request->cookies->get($this->app['token.authentication.name']);
         if ($authCookie === null || !$this->accessControl()->isValidSession($authCookie)) {
-            $app['logger.flash']->info(Trans::__('Please log on.'));
+            // Don't redirect on ajaxy requests (eg. when Saving a record), but send an error
+            // message with a `500` status code instead.
+            if ($request->isXmlHttpRequest()) {
+                $response = ['error' => ['message' => Trans::__('general.phrase.redirect-detected')]];
+
+                return new JsonResponse($response, 500);
+            }
+
+            $app['logger.flash']->info(Trans::__('general.phrase.please-logon'));
 
             return $this->redirectToRoute('login');
         }
 
         if (!$this->isAllowed($roleRoute)) {
-            $app['logger.flash']->error(Trans::__('You do not have the right privileges to view that page.'));
+            $app['logger.flash']->error(Trans::__('general.phrase.access-denied-privilege-view-page'));
+            $event->setReason(AccessControlEvents::FAILURE_DENIED);
+            $app['dispatcher']->dispatch(AccessControlEvents::ACCESS_CHECK_FAILURE, $event);
 
             return $this->redirectToRoute('dashboard');
         }
+
+        // Success!
+        $app['dispatcher']->dispatch(AccessControlEvents::ACCESS_CHECK_SUCCESS, $event);
 
         // Stop the 'stopwatch' for the profiler.
         $app['stopwatch']->stop('bolt.backend.before');
@@ -119,14 +135,54 @@ abstract class BackendBase extends Base
     }
 
     /**
+     * Temporary override for back-end.
+     *
+     * @internal For core use only, to be removed soon!
+     *
+     * @param string $textQuery
+     * @param array  $parameters
+     * @param array  $pager
+     * @param array  $whereParameters
+     *
+     * @return QueryResultset
+     *
+     * @see \Bolt\Storage\Query\Query::getContent()
+     */
+    protected function getContent($textQuery, $parameters = [], &$pager = [], $whereParameters = [])
+    {
+        $query = $this->app['query'];
+
+        return $query->getContent($textQuery, $parameters);
+    }
+
+    /**
+     * Temporary hack to get the permission name associated with the route.
+     *
+     * @internal
+     *
+     * @param string $route
+     *
+     * @return string
+     */
+    private function getRoutePermission($route)
+    {
+        if ($route === 'omnisearch-results') {
+            return 'omnisearch';
+        }
+
+        return $route;
+    }
+
+    /**
      * Set the authentication cookie in the response.
      *
+     * @param Request  $request
      * @param Response $response
      * @param string   $token
      *
      * @return Response
      */
-    protected function setAuthenticationCookie(Response $response, $token)
+    protected function setAuthenticationCookie(Request $request, Response $response, $token)
     {
         $response->setVary('Cookies', false)->setMaxAge(0)->setPrivate();
         $response->headers->setCookie(
@@ -134,7 +190,7 @@ abstract class BackendBase extends Base
                 $this->app['token.authentication.name'],
                 $token,
                 time() + $this->getOption('general/cookies_lifetime'),
-                $this->resources()->getUrl('root'),
+                $request->getBasePath(),
                 $this->getOption('general/cookies_domain'),
                 $this->getOption('general/enforce_ssl'),
                 true
@@ -174,29 +230,22 @@ abstract class BackendBase extends Base
      */
     private function checkFirstUser(Application $app, $route)
     {
-        // Check the database users table exists
-        $tableExists = $app['schema']->hasUserTable();
+        /** @var UsersRepository $repo */
+        $repo = $app['storage']->getRepository(Entity\Users::class);
+        try {
+            $userCount = $repo->count();
+        } catch (TableNotFoundException $e) {
+            $app['schema']->update();
+            $app['logger.flash']->info(Trans::__('general.phrase.users-none-create-first'));
 
-        // Test if we have a valid users in our table
-        $userCount = 0;
-        if ($tableExists) {
-            $userCount = $this->users()->hasUsers();
+            return $this->redirectToRoute('userfirst');
         }
 
         // If the users table is present, but there are no users, and we're on
         // /bolt/userfirst, we let the user stay, because they need to set up
         // the first user.
-        if ($tableExists && $userCount === 0 && $route === 'userfirst') {
-            return null;
-        }
-
-        // If there are no users in the users table, or the table doesn't exist.
-        // Repair the DB, and let's add a new user.
-        if (!$tableExists || $userCount === 0) {
-            $app['schema']->update();
-            $app['logger.flash']->info(Trans::__('There are no users in the database. Please create the first user.'));
-
-            return $this->redirectToRoute('userfirst');
+        if ($userCount === 0) {
+            return $route === 'userfirst' ? null : $this->redirectToRoute('userfirst');
         }
 
         return true;

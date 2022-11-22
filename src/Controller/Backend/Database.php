@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Controller\Backend;
 
 use Silex\ControllerCollection;
@@ -7,7 +8,7 @@ use Symfony\Component\HttpFoundation\Request;
 /**
  * Backend controller for database manipulation routes.
  *
- * Prior to v2.3 this functionality primarily existed in the monolithic
+ * Prior to v3.0 this functionality primarily existed in the monolithic
  * Bolt\Controllers\Backend class.
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
@@ -33,7 +34,7 @@ class Database extends BackendBase
      *
      * @param Request $request
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     public function check(Request $request)
     {
@@ -46,6 +47,7 @@ class Database extends BackendBase
             'debug'   => $request->query->has('debug'),
             'alters'  => $this->app['schema.comparator']->getAlters(),
             'creates' => $this->app['schema.comparator']->getCreates(),
+            'diffs'   => $this->app['schema.comparator']->getDiffs(),
         ];
 
         return $this->render('@bolt/dbcheck/dbcheck.twig', $context);
@@ -69,7 +71,7 @@ class Database extends BackendBase
     /**
      * Show the result of database updates.
      *
-     * @return \Bolt\Response\BoltResponse
+     * @return \Bolt\Response\TemplateResponse
      */
     public function updateResult()
     {
@@ -79,6 +81,9 @@ class Database extends BackendBase
             'changes' => $output,
             'check'   => null,
             'debug'   => false,
+            'alters'  => null,
+            'creates' => null,
+            'diffs'   => null,
         ];
 
         return $this->render('@bolt/dbcheck/dbcheck.twig', $context);

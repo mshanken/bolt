@@ -1,10 +1,12 @@
 <?php
+
 namespace Bolt\Tests\Logger;
 
 use Bolt\Logger\Handler\SystemHandler;
 use Bolt\Tests\BoltUnitTest;
 use Bolt\Tests\Mocks\DoctrineMockBuilder;
 use Monolog\Logger;
+use PHPUnit\Framework\Assert;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
@@ -23,11 +25,11 @@ class SystemHandlerTest extends BoltUnitTest
 
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
-        $app['db'] = $db;
+        $this->setService('db', $db);
 
         $log->pushHandler($handler);
         $log->addRecord(Logger::DEBUG, 'test', ['id' => 5, 'title' => 'test']);
-        $this->assertEquals('bolt_log_system', \PHPUnit_Framework_Assert::readAttribute($handler, 'tablename'));
+        $this->assertEquals('bolt_log_system', Assert::readAttribute($handler, 'tablename'));
     }
 
     public function testHandle()
@@ -39,12 +41,14 @@ class SystemHandlerTest extends BoltUnitTest
 
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('insert')
             ->with($this->equalTo('bolt_log_system'));
-        $app['db'] = $db;
+        $this->setService('db', $db);
 
         $log->addRecord(Logger::DEBUG, 'test', ['id' => 5, 'title' => 'test']);
+
+        $this->addToAssertionCount(1);
     }
 
     public function testHandleWithException()
@@ -56,12 +60,14 @@ class SystemHandlerTest extends BoltUnitTest
 
         $mocker = new DoctrineMockBuilder();
         $db = $mocker->getConnectionMock();
-        $db->expects($this->any())
+        $db->expects($this->atLeastOnce())
             ->method('insert')
             ->with($this->equalTo('bolt_log_system'));
-        $app['db'] = $db;
+        $this->setService('db', $db);
 
         $log->addRecord(Logger::DEBUG, 'test', ['event' => '', 'exception' => new \Exception()]);
+
+        $this->addToAssertionCount(1);
     }
 
     public function testNotHandling()

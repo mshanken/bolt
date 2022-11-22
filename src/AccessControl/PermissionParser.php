@@ -2,6 +2,7 @@
 
 namespace Bolt\AccessControl;
 
+use Bolt\Common\Json;
 use Bolt\Exception\PermissionLexerException;
 use Bolt\Exception\PermissionParserException;
 
@@ -141,9 +142,10 @@ class PermissionParser
      *
      * @param $what
      *
-     * @throws Exception Parser or lexer errors are thrown as
+     * @throws PermissionLexerException
+     * @throws PermissionParserException
      *
-     * @return array A parse tree.
+     * @return array a parse tree
      */
     public static function run($what)
     {
@@ -155,7 +157,7 @@ class PermissionParser
      *
      * @param $query
      *
-     * @throws \Bolt\Exception\PermissionLexerException
+     * @throws PermissionLexerException
      *
      * @return array
      */
@@ -240,8 +242,8 @@ class PermissionParser
      * Assert that the given $token's 'type' key is in the list of $expected
      * token types.
      *
-     * @param array $expected List of token types (T_XXXX constants).
-     * @param array $token    A lexer token, associative array.
+     * @param array $expected list of token types (T_XXXX constants)
+     * @param array $token    a lexer token, associative array
      *
      * @throws PermissionParserException
      */
@@ -258,7 +260,7 @@ class PermissionParser
             if ($token['match']) {
                 $actualStr .= " ('" . addslashes($token['match']) . "')";
             }
-            $actualStr .= ' <<< ' . json_encode($token) . ' >>> ';
+            $actualStr .= ' <<< ' . Json::dump($token) . ' >>> ';
             throw new PermissionParserException("Parser error: expected $expectedStr, but found $actualStr");
         }
     }
@@ -269,16 +271,16 @@ class PermissionParser
      * @param array $tokens An array or iterable of lexer tokens. The output of
      *                      `lex()` is suitable here.
      *
-     * @return array A nested associative array representing the resulting
-     *               parse tree.
+     * @return array a nested associative array representing the resulting
+     *               parse tree
      */
     public static function parse($tokens)
     {
         if (empty($tokens)) {
             return ['type' => self::P_TRUE, 'value' => ''];
-        } else {
-            return self::parseAnd($tokens);
         }
+
+        return self::parseAnd($tokens);
     }
 
     private static function parseAnd(&$tokens)
@@ -297,9 +299,9 @@ class PermissionParser
         }
         if (count($parts) > 1) {
             return ['type' => self::P_AND, 'value' => $parts];
-        } else {
-            return $parts[0];
         }
+
+        return $parts[0];
     }
 
     private static function parseOr(&$tokens)
@@ -318,9 +320,9 @@ class PermissionParser
         }
         if (count($parts) > 1) {
             return ['type' => self::P_OR, 'value' => $parts];
-        } else {
-            return $parts[0];
         }
+
+        return $parts[0];
     }
 
     private static function parseSimple(&$tokens)

@@ -1,36 +1,32 @@
 <?php
+
 namespace Bolt\Routing;
 
+use Pimple\Container;
+
 /**
- * Handles resolving callbacks from routing.yml that specify a class name
+ * Handles resolving callbacks from routing.yml that specify a class name.
  *
  * @author Carson Full <carsonfull@gmail.com>
  */
 class CallbackResolver extends \Silex\CallbackResolver
 {
-    /** @var \Pimple $app */
+    /** @var Container $app */
     protected $app;
-    /** @var array $classmap */
-    protected $classmap;
 
     /**
      * CallbackResolver Constructor.
      *
-     * @param \Pimple $app
-     * @param array   $classmap An array of class names as keys
-     *                          mapped to their service name as values
-     *                          Ex: 'Bolt\Controller\Frontend' => 'controller.frontend'
+     * @param Container $app
      */
-    public function __construct(\Pimple $app, array $classmap)
+    public function __construct(Container $app)
     {
         $this->app = $app;
-        $this->classmap = $classmap;
         parent::__construct($app);
     }
 
     /**
-     * Returns true if the string is a valid service method representation or if
-     * the string/array references a class contained in the resolver's classmap.
+     * Returns true if the string is a valid service method representation.
      *
      * @param string $name
      *
@@ -55,10 +51,7 @@ class CallbackResolver extends \Silex\CallbackResolver
             return false; // Can't handle this, maybe already callable
         }
 
-        if (isset($this->classmap[$cls])) {
-            return true; // Will use service definition
-        }
-        if (!class_exists($cls)) {
+        if (!class_exists($cls) || !method_exists($cls, $method)) {
             return false; // Can't handle this
         }
         $refMethod = new \ReflectionMethod($cls, $method);
@@ -71,7 +64,7 @@ class CallbackResolver extends \Silex\CallbackResolver
     }
 
     /**
-     * Converts:
+     * Converts:.
      *
      * - Bolt\\Controller\\Frontend::hompeage to controller.frontend:homepage
      * - [Bolt\\Controller\\Frontend, homepage] to controller.frontend:homepage
@@ -80,7 +73,7 @@ class CallbackResolver extends \Silex\CallbackResolver
      *
      * @param string $name
      *
-     * @return array A callable array
+     * @return callable A callable array
      */
     public function convertCallback($name)
     {
@@ -100,12 +93,6 @@ class CallbackResolver extends \Silex\CallbackResolver
             $method = end($parts);
         } else {
             return parent::convertCallback($name);
-        }
-
-        if (isset($this->classmap[$cls])) {
-            $service = $this->classmap[$cls];
-
-            return parent::convertCallback("$service:$method");
         }
 
         return [$this->instantiateClass($cls), $method];

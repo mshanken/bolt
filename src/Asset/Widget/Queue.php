@@ -7,9 +7,13 @@ use Bolt\Asset\Injector;
 use Bolt\Asset\QueueInterface;
 use Bolt\Asset\Snippet\Snippet;
 use Bolt\Asset\Target;
+use Bolt\Common\Thrower;
 use Bolt\Controller\Zone;
-use Bolt\Render;
 use Doctrine\Common\Cache\CacheProvider;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Twig\Environment;
+use Twig\Markup;
 
 /**
  * Widget queue processor.
@@ -27,28 +31,30 @@ class Queue implements QueueInterface
     protected $injector;
     /** @var \Doctrine\Common\Cache\CacheProvider */
     protected $cache;
-    /** @var \Bolt\Render */
-    protected $render;
+    /** @var Environment */
+    protected $twig;
 
-    /** @var boolean */
+    /** @var bool */
     private $deferAdded;
 
     /**
      * Constructor.
      *
+     * NOTE: Constructor type hint for Environment omitted for BC, add in v4
+     *
      * @param Injector      $injector
      * @param CacheProvider $cache
-     * @param Render        $render
+     * @param Environment   $twig
      */
-    public function __construct(Injector $injector, CacheProvider $cache, Render $render)
+    public function __construct(Injector $injector, CacheProvider $cache, Environment $twig)
     {
         $this->injector = $injector;
         $this->cache = $cache;
-        $this->render = $render;
+        $this->twig = $twig;
     }
 
     /**
-     * Add a wiget to the queue.
+     * Add a widget to the queue.
      *
      * @param WidgetAssetInterface $widget
      */
@@ -75,7 +81,7 @@ class Queue implements QueueInterface
      *
      * @param string $key
      *
-     * @return \Twig_Markup|string
+     * @return Markup|string
      */
     public function getRendered($key)
     {
@@ -93,16 +99,14 @@ class Queue implements QueueInterface
     /**
      * {@inheritdoc}
      */
-    public function process($html)
+    public function process(Request $request, Response $response)
     {
         /** @var WidgetAssetInterface $widget */
         foreach ($this->queue as $widget) {
-            if ($widget->getZone() === Zone::FRONTEND && $widget->isDeferred()) {
-                $html = $this->addDeferredJavaScript($widget, $html);
+            if ($widget->isDeferred()) {
+                $this->addDeferredJavaScript($widget, $response);
             }
         }
-
-        return $html;
     }
 
     /**
@@ -115,17 +119,11 @@ class Queue implements QueueInterface
         return $this->queue;
     }
 
-    /**
-     * Get the number of queued widgets.
-     *
-     * @param string $location Location (e.g. 'dashboard_aside_top')
-     * @param string $zone     Either Zone::FRONTEND or Zone::BACKEND
-     *
-     * @return boolean
-     */
     public function hasItemsInQueue($location, $zone = Zone::FRONTEND)
     {
-        return (boolean) $this->countItemsInQueue($location, $zone);
+        Deprecated::method(3.4, 'Queue::has');
+
+        return $this->has($location, $zone);
     }
 
     /**
@@ -134,15 +132,35 @@ class Queue implements QueueInterface
      * @param string $location Location (e.g. 'dashboard_aside_top')
      * @param string $zone     Either Zone::FRONTEND or Zone::BACKEND
      *
-     * @return boolean
+     * @return bool
      */
+    public function has($location, $zone = Zone::FRONTEND)
+    {
+        return (bool) $this->count($location, $zone);
+    }
+
     public function countItemsInQueue($location, $zone = Zone::FRONTEND)
+    {
+        Deprecated::method(3.4, 'Queue::count');
+
+        return $this->count($location, $zone);
+    }
+
+    /**
+     * Get the number of queued widgets.
+     *
+     * @param string $location Location (e.g. 'dashboard_aside_top')
+     * @param string $zone     Either Zone::FRONTEND or Zone::BACKEND
+     *
+     * @return int
+     */
+    public function count($location, $zone = Zone::FRONTEND)
     {
         $count = 0;
 
         foreach ($this->queue as $widget) {
             if ($widget->getZone() === $zone && $widget->getLocation() === $location) {
-                $count++;
+                ++$count;
             }
         }
 
@@ -152,8 +170,9 @@ class Queue implements QueueInterface
     /**
      * Render a location's widget.
      *
-     * @param string $location Location (e.g. 'dashboard_aside_top')
-     * @param string $zone     Either Zone::FRONTEND or Zone::BACKEND
+     * @param string $location        Location (e.g. 'dashboard_aside_top')
+     * @param string $zone            Either Zone::FRONTEND or Zone::BACKEND
+     * @param string $wrapperTemplate Template file for wrapper
      *
      * @return string|null
      */
@@ -163,21 +182,19 @@ class Queue implements QueueInterface
 
         /** @var WidgetAssetInterface $widget */
         foreach ($this->sort($this->queue) as $widget) {
-            if ($widget->getZone() === $zone && $widget->getLocation() === $location) {
-                $widgets[] = [ 'object' => $widget, 'html' => $this->getHtml($widget) ];
+            if ($widget->getZone() !== $zone || $widget->getLocation() !== $location) {
+                continue;
             }
+            $html = $widget->isDeferred() ? null : $this->getHtml($widget);
+            $widgets[] = ['object' => $widget, 'html' => $html];
         }
 
-        if (!empty($widgets)) {
-            $twigvars = [ 'location' => $location, 'widgets' => $widgets ];
-            $html = $this->render->render($wrapperTemplate, $twigvars);
-        } else {
-            $html = null;
+        if (empty($widgets)) {
+            return null;
         }
 
-        return $html;
+        return $this->twig->render($wrapperTemplate, ['location' => $location, 'widgets' => $widgets]);
     }
-
 
     /**
      * Get the HTML content from the widget.
@@ -195,21 +212,8 @@ class Queue implements QueueInterface
             return $html;
         }
 
-        $e = null;
-        set_error_handler(
-            function ($errno, $errstr) use (&$e) {
-                return $e = new \Exception($errstr, $errno);
-            }
-        );
+        $html = Thrower::call([$widget, '__toString']);
 
-        // Get the HTML from object cast and rethrow an exception if present
-        $html = (string) $widget;
-
-        restore_error_handler();
-
-        if ($e) {
-            throw $e;
-        }
         if ($widget->getCacheDuration() !== null) {
             $this->cache->save($key, $html, $widget->getCacheDuration());
         }
@@ -221,28 +225,22 @@ class Queue implements QueueInterface
      * Insert a snippet of Javascript to fetch the actual widget's contents.
      *
      * @param WidgetAssetInterface $widget
-     * @param string               $html
-     *
-     * @return string
+     * @param Response             $response
      */
-    protected function addDeferredJavaScript(WidgetAssetInterface $widget, $html)
+    protected function addDeferredJavaScript(WidgetAssetInterface $widget, Response $response)
     {
         if ($this->deferAdded) {
-            return $html;
+            return;
         }
 
-        $javaScript = $this->render->render(
-            'widgetjavascript.twig',
-            [
-                'widget' => $widget,
-            ]
-        );
-        $snippet = (new Snippet())
+        $javaScript = $this->twig->render('widgetjavascript.twig', ['widget' => $widget]);
+        $snippet = Snippet::create()
+            ->setCallback((string) $javaScript)
             ->setLocation(Target::AFTER_BODY_JS)
-            ->setCallback((string) $javaScript);
+        ;
 
         $this->deferAdded = true;
 
-        return $this->injector->inject($snippet, Target::AFTER_BODY_JS, $html);
+        $this->injector->inject($snippet, Target::AFTER_BODY_JS, $response);
     }
 }

@@ -3,10 +3,10 @@
 namespace Bolt\Storage\Database\Schema;
 
 use Bolt\Exception\StorageException;
+use Bolt\Filesystem\Exception\FileNotFoundException;
+use Bolt\Filesystem\Exception\IOException;
+use Bolt\Filesystem\Handler\FileInterface;
 use Carbon\Carbon;
-use Doctrine\DBAL\Schema\Schema;
-use Symfony\Component\Filesystem\Exception\IOException;
-use Symfony\Component\Filesystem\Filesystem;
 
 /**
  * Schema validation check functionality.
@@ -15,38 +15,40 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 class Timer
 {
-    /** @var \Symfony\Component\Filesystem\Filesystem */
-    protected $filesystem;
-    /** @var string */
-    protected $timestampFile;
-    /** @var boolean */
+    /** @var FileInterface */
+    protected $cacheFile;
+    /** @var bool */
     protected $expired;
 
     const CHECK_INTERVAL = 1800;
 
-    public function __construct($cachePath)
+    /**
+     * Constructor.
+     *
+     * @param FileInterface $cacheFile
+     */
+    public function __construct(FileInterface $cacheFile)
     {
-        $this->timestampFile = $cachePath . '/dbcheck.ts';
-        $this->filesystem = new Filesystem();
+        $this->cacheFile = $cacheFile;
     }
 
     /**
      * Check if we have determined that we need to do a database check.
      *
-     * @return boolean
+     * @return bool
      */
     public function isCheckRequired()
     {
-        if ($this->expired !== null) {
-            return $this->expired;
+        if ($this->expired === false) {
+            return false;
         }
 
-        if ($this->filesystem->exists($this->timestampFile)) {
-            $expiryTimestamp = (integer) file_get_contents($this->timestampFile);
+        if ($this->cacheFile->exists()) {
+            $expiryTimestamp = (int) $this->cacheFile->read();
         } else {
             $expiryTimestamp = 0;
         }
-        $ts = Carbon::createFromTimeStamp($expiryTimestamp + self::CHECK_INTERVAL);
+        $ts = Carbon::createFromTimestamp($expiryTimestamp + self::CHECK_INTERVAL);
 
         return $this->expired = $ts->isPast();
     }
@@ -60,13 +62,13 @@ class Timer
     {
         try {
             $this->expired = true;
-            $this->filesystem->remove($this->timestampFile);
+            $this->cacheFile->delete();
+        } catch (FileNotFoundException $e) {
+            // Don't need to delete the file, it isn't there
         } catch (IOException $e) {
-            $message = sprintf(
-                "The file '%s' exists, but couldn't be removed. Please remove this file manually, and try again.",
-                $this->timestampFile
-            );
-            throw new StorageException($message);
+            $message = sprintf('Unable to remove database schema check timestamp: %s', $e->getMessage());
+
+            throw new StorageException($message, $e->getCode(), $e);
         }
     }
 
@@ -81,7 +83,7 @@ class Timer
     {
         try {
             $this->expired = false;
-            $this->filesystem->dumpFile($this->timestampFile, time());
+            $this->cacheFile->put(Carbon::now()->getTimestamp());
         } catch (IOException $e) {
             // Something went wrong
         }

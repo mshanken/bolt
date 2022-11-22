@@ -3,7 +3,9 @@
 namespace Bolt;
 
 use Bolt\AccessControl\Permissions;
+use Bolt\Common\Deprecated;
 use Bolt\Storage\Entity;
+use Bolt\Storage\Repository;
 use Bolt\Translation\Translator as Trans;
 use Doctrine\DBAL\Exception\TableNotFoundException;
 use Silex;
@@ -11,6 +13,8 @@ use Symfony\Component\HttpFoundation\Request;
 
 /**
  * Class to handle things dealing with users.
+ *
+ * @deprecated Deprecated since 3.0, to be removed in 4.0.
  */
 class Users
 {
@@ -18,11 +22,7 @@ class Users
     public $users = [];
     public $currentuser;
 
-    /** @deprecated Deprecated since 3.0, to be removed in 4.0. */
-    public $usertable;
-    public $authtokentable;
-
-    /** @var \Bolt\Storage\Repository\UsersRepository */
+    /** @var Repository\UsersRepository */
     protected $repository;
 
     /** @var \Silex\Application $app */
@@ -34,11 +34,18 @@ class Users
     public function __construct(Silex\Application $app)
     {
         $this->app = $app;
-        $this->repository = $this->app['storage']->getRepository('Bolt\Storage\Entity\Users');
+    }
 
-        /** @deprecated Deprecated since 3.0, to be removed in 4.0. */
-        $this->usertable = $this->app['storage']->getTablename('users');
-        $this->authtokentable = $this->app['storage']->getTablename('authtoken');
+    /**
+     * @return Repository\UsersRepository
+     */
+    private function getRepository()
+    {
+        if ($this->repository === null) {
+            $this->repository = $this->app['storage']->getRepository(Entity\Users::class);
+        }
+
+        return $this->repository;
     }
 
     /**
@@ -46,7 +53,7 @@ class Users
      *
      * @param Entity\Users|array $user
      *
-     * @return integer The number of affected rows.
+     * @return int the number of affected rows
      */
     public function saveUser($user)
     {
@@ -58,7 +65,7 @@ class Users
         $user->setUsername($this->app['slugify']->slugify($user->getUsername()));
 
         // Save the entity
-        return $this->repository->save($user);
+        return $this->getRepository()->save($user);
     }
 
     /**
@@ -66,7 +73,13 @@ class Users
      */
     public function isValidSession()
     {
+        Deprecated::method(3.0);
+
         $request = Request::createFromGlobals();
+        $authCookie = $request->cookies->get($this->app['token.authentication.name']);
+        if ($authCookie === null) {
+            return false;
+        }
 
         return $this->app['access_control']->isValidSession($request->cookies->get($this->app['token.authentication.name']));
     }
@@ -76,7 +89,13 @@ class Users
      */
     public function checkValidSession()
     {
+        Deprecated::method(3.0);
+
         $request = Request::createFromGlobals();
+        $authCookie = $request->cookies->get($this->app['token.authentication.name']);
+        if ($authCookie === null) {
+            return false;
+        }
 
         return $this->app['access_control']->isValidSession($request->cookies->get($this->app['token.authentication.name']));
     }
@@ -84,121 +103,38 @@ class Users
     /**
      * @deprecated Deprecated since 3.0, to be removed in 4.0.
      */
-    public function getAntiCSRFToken()
-    {
-        return $this->app['form.csrf_provider']->getToken('bolt')->getValue();
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function checkAntiCSRFToken($token = '')
-    {
-        if (empty($token)) {
-            $token = $this->app['request']->get('bolt_csrf_token');
-        }
-
-        if ($token === $this->getAntiCSRFToken()) {
-            return true;
-        } else {
-            $this->app['logger.flash']->error('The security token was incorrect. Please try again.');
-
-            return false;
-        }
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
     public function getActiveSessions()
     {
+        Deprecated::method(3.0);
+
         return $this->app['access_control']->getActiveSessions();
     }
 
     /**
      * Remove a user from the database.
      *
-     * @param integer $id
+     * @param int $id
      *
-     * @return integer The number of affected rows.
+     * @return int the number of affected rows
      */
     public function deleteUser($id)
     {
-        $user = $this->repository->find($id);
+        $user = $this->getRepository()->find($id);
 
         if (!$user) {
-            $this->app['logger.flash']->error(Trans::__('That user does not exist.'));
+            $this->app['logger.flash']->warning(Trans::__('general.phrase.user-not-exist'));
 
             return false;
         }
 
-        $userName = $user->getUsername();
-        if ($result = $this->repository->delete($user)) {
-            $authtokenRepository = $this->app['storage']->getRepository('Bolt\Storage\Entity\Authtoken');
-            $authtokenRepository->deleteTokens($userName);
+        $userId = $user->getId();
+        if ($result = $this->getRepository()->delete($user)) {
+            /** @var Repository\AuthtokenRepository $authtokenRepository */
+            $authtokenRepository = $this->app['storage']->getRepository(Entity\Authtoken::class);
+            $authtokenRepository->deleteTokens($userId);
         }
 
         return $result;
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function login($user, $password)
-    {
-        $request = Request::createFromGlobals();
-
-        return $this->app['access_control.login']->login($request, $user, $password);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    protected function loginEmail($email, $password)
-    {
-        return $this->app['access_control.login']->login($email, $password);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function loginUsername($username, $password)
-    {
-        return $this->app['access_control.login']->login($username, $password);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function loginAuthtoken()
-    {
-        $request = Request::createFromGlobals();
-
-        return $this->app['access_control.login']->login($request, null, null);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function resetPasswordRequest($username)
-    {
-        return $this->app['access_control.password']->resetPasswordRequest($username);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function resetPasswordConfirm($token)
-    {
-        return $this->app['access_control.password']->resetPasswordConfirm($token);
-    }
-
-    /**
-     * @deprecated Deprecated since 3.0, to be removed in 4.0.
-     */
-    public function logout()
-    {
-        return $this->app['access_control']->revokeSession();
     }
 
     /**
@@ -225,7 +161,7 @@ class Users
         }
 
         try {
-            if (!$tempusers = $this->repository->getUsers()) {
+            if (!$tempusers = $this->getRepository()->getUsers()) {
                 return [];
             }
 
@@ -244,19 +180,17 @@ class Users
     /**
      * Test to see if there are users in the user table.
      *
-     * @return integer
+     * @return int
      */
     public function hasUsers()
     {
-        $rows = $this->repository->hasUsers();
-
-        return $rows ? (integer) $rows['count'] : 0;
+        return $this->getRepository()->count();
     }
 
     /**
      * Get a user, specified by ID, username or email address.
      *
-     * @param integer|string $userId
+     * @param int|string $userId
      *
      * @return array|false
      */
@@ -272,7 +206,7 @@ class Users
 
         // Fallback: See if we can get it by username or email address.
         try {
-            if ($userEntity = $this->repository->getUser($userId)) {
+            if ($userEntity = $this->getRepository()->getUser($userId)) {
                 return $userEntity->toArray();
             }
         } catch (TableNotFoundException $e) {
@@ -322,30 +256,32 @@ class Users
      */
     public function getCurrentUsername()
     {
+        Deprecated::method(3.0);
+
         return $this->getCurrentUserProperty('username');
     }
 
     /**
      * Check a user's enable status.
      *
-     * @param integer|boolean $id User ID, or false for current user
+     * @param int|bool $id User ID, or false for current user
      *
-     * @return boolean
+     * @return bool
      */
     public function isEnabled($id = false)
     {
         $user = $id ? $this->getUser($id) : $this->getCurrentUser();
 
-        return (boolean) $user['enabled'];
+        return (bool) $user['enabled'];
     }
 
     /**
      * Enable or disable a user, specified by id.
      *
-     * @param integer|string  $id
-     * @param boolean|integer $enabled
+     * @param int|string $id
+     * @param bool|int   $enabled
      *
-     * @return integer
+     * @return int
      */
     public function setEnabled($id, $enabled = true)
     {
@@ -353,7 +289,7 @@ class Users
             return false;
         }
 
-        $user['enabled'] = (integer) $enabled;
+        $user['enabled'] = (int) $enabled;
 
         return $this->saveUser($user);
     }
@@ -361,10 +297,10 @@ class Users
     /**
      * Check if a certain user has a specific role.
      *
-     * @param string|integer $id
-     * @param string         $role
+     * @param string|int $id
+     * @param string     $role
      *
-     * @return boolean
+     * @return bool
      */
     public function hasRole($id, $role)
     {
@@ -378,10 +314,10 @@ class Users
     /**
      * Add a certain role from a specific user.
      *
-     * @param string|integer $id
-     * @param string         $role
+     * @param string|int $id
+     * @param string     $role
      *
-     * @return boolean
+     * @return bool
      */
     public function addRole($id, $role)
     {
@@ -398,10 +334,10 @@ class Users
     /**
      * Remove a certain role from a specific user.
      *
-     * @param string|integer $id
-     * @param string         $role
+     * @param string|int $id
+     * @param string     $role
      *
-     * @return boolean
+     * @return bool
      */
     public function removeRole($id, $role)
     {
@@ -421,8 +357,8 @@ class Users
      * Ensure changes to the user's roles match what the current user has
      * permissions to manipulate.
      *
-     * @param string|integer $id       User ID
-     * @param array          $newRoles Roles from form submission
+     * @param string|int $id       User ID
+     * @param array      $newRoles Roles from form submission
      *
      * @return string[] The user's roles with the allowed changes
      */
@@ -461,12 +397,12 @@ class Users
      * There should always be at least one If there isn't we promote the current
      * user.
      *
-     * @return boolean
+     * @return bool
      */
     public function checkForRoot()
     {
         // Don't check for root, if we're not logged in.
-        if ($this->getCurrentUsername() === false) {
+        if ($this->getCurrentUser() === false) {
             return false;
         }
 
@@ -484,10 +420,12 @@ class Users
         $this->app['schema']->update();
 
         // Show a helpful message to the user.
-        $this->app['logger.flash']->info(Trans::__("There should always be at least one 'root' user. You have just been promoted. Congratulations!"));
+        $this->app['logger.flash']->info(Trans::__('general.phrase.missing-root-jackpot'));
 
         // If we reach this point, there is no user 'root'. We promote the current user.
-        return $this->addRole($this->getCurrentUsername(), 'root');
+        $user = $this->getCurrentUser();
+
+        return $this->addRole($user['id'], 'root');
     }
 
     /**
@@ -515,11 +453,11 @@ class Users
      * "contenttype:$contenttype:change-ownership:$id" - Change the ownership
      *                                of the specified content type or item.
      *
-     * @param string $what        The desired permission, as elaborated upon above.
+     * @param string $what        the desired permission, as elaborated upon above
      * @param string $contenttype
      * @param int    $contentid
      *
-     * @return bool TRUE if the permission is granted, FALSE if denied.
+     * @return bool TRUE if the permission is granted, FALSE if denied
      */
     public function isAllowed($what, $contenttype = null, $contentid = null)
     {
@@ -536,7 +474,7 @@ class Users
      * @param string $contenttype
      * @param string $contentid
      *
-     * @return boolean
+     * @return bool
      */
     public function isContentStatusTransitionAllowed($fromStatus, $toStatus, $contenttype, $contentid = null)
     {
@@ -573,11 +511,11 @@ class Users
      * values are applied, because what constitutes 'equal' for the purpose
      * of this filtering depends on the field type.
      *
-     * @param string  $fieldname
-     * @param string  $value
-     * @param integer $currentid
+     * @param string $fieldname
+     * @param string $value
+     * @param int    $currentid
      *
-     * @return boolean
+     * @return bool
      */
     public function checkAvailability($fieldname, $value, $currentid = 0)
     {
@@ -599,6 +537,8 @@ class Users
      */
     public function updateUserLogin($user)
     {
+        Deprecated::method(3.0);
+
         return $this->app['access_control']->updateUserLogin($user);
     }
 }

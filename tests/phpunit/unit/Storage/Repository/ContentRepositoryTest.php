@@ -1,12 +1,13 @@
 <?php
+
 namespace Bolt\Tests\Storage\Repository;
 
-use Bolt\Storage\Entity\Content;
+use Bolt\Storage\Entity;
 use Bolt\Storage\Repository;
 use Bolt\Tests\BoltUnitTest;
 
 /**
- * Class to test src/Storage/Repository/Content
+ * Class to test src/Storage/Repository/Content.
  *
  * @author Ross Riley <riley.ross@gmail.com>
  */
@@ -19,7 +20,7 @@ class ContentRepositoryTest extends BoltUnitTest
         $em = $app['storage'];
         $repo = $em->getRepository('bolt_showcases');
 
-        $this->assertInstanceOf('Bolt\Storage\Repository\ContentRepository', $repo);
+        $this->assertInstanceOf(Repository\ContentRepository::class, $repo);
     }
 
     public function testCreate()
@@ -28,11 +29,11 @@ class ContentRepositoryTest extends BoltUnitTest
         $em = $app['storage'];
         $repo = $em->getRepository('showcases');
 
-        $showcase = new Content(array(
+        $showcase = new Entity\Content([
             'title'  => 'Test Showcase',
             'slug'   => 'test-showcase',
-            'status' => 'published'
-        ));
+            'status' => 'published',
+        ]);
         $res = $repo->save($showcase);
         $this->assertNotEmpty($res);
     }
@@ -83,12 +84,12 @@ class ContentRepositoryTest extends BoltUnitTest
         $em = $app['storage'];
 
         $repo = $em->getRepository('showcases');
-        $record = $repo->create(array(
+        $record = $repo->create([
             'title'  => 'New Test Showcase',
             'slug'   => 'new-test-showcase',
-            'status' => 'published'
-        ));
+            'status' => 'published',
+        ]);
 
-        $this->assertInstanceOf('Bolt\Storage\Entity\Content', $record);
+        $this->assertInstanceOf(Entity\Content::class, $record);
     }
 }

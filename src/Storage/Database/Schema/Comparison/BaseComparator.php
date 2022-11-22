@@ -2,18 +2,17 @@
 
 namespace Bolt\Storage\Database\Schema\Comparison;
 
-use Bolt\Storage\Database\Schema\Manager;
 use Bolt\Storage\Database\Schema\SchemaCheck;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
-use Doctrine\DBAL\Schema\Comparator;
 use Doctrine\DBAL\Schema\Table;
 use Doctrine\DBAL\Schema\TableDiff;
-use Pimple;
 use Psr\Log\LoggerInterface;
 
 /**
  * Base class for handling table comparison.
+ *
+ * @internal
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
@@ -21,10 +20,8 @@ abstract class BaseComparator
 {
     /** @var \Doctrine\DBAL\Connection */
     protected $connection;
-    /** @var \Bolt\Storage\Database\Schema\Manager */
-    protected $manager;
-    /** @var \Pimple */
-    protected $schemaTables;
+    /** @var string */
+    protected $prefix;
     /** @var \Psr\Log\LoggerInterface */
     protected $systemLog;
 
@@ -36,7 +33,7 @@ abstract class BaseComparator
     protected $tablesAlter;
     /** @var IgnoredChange[] */
     protected $ignoredChanges = [];
-    /** @var boolean */
+    /** @var bool */
     protected $pending;
     /** @var \Bolt\Storage\Database\Schema\SchemaCheck */
     protected $response;
@@ -45,30 +42,31 @@ abstract class BaseComparator
      * Constructor.
      *
      * @param Connection      $connection
-     * @param Manager         $manager
-     * @param Pimple          $schemaTables
+     * @param string          $prefix
      * @param LoggerInterface $systemLog
      */
-    public function __construct(Connection $connection, Manager $manager, Pimple $schemaTables, LoggerInterface $systemLog)
+    public function __construct(Connection $connection, $prefix, LoggerInterface $systemLog)
     {
         $this->connection = $connection;
-        $this->manager = $manager;
-        $this->schemaTables = $schemaTables;
+        $this->prefix = $prefix;
         $this->systemLog = $systemLog;
-        $this->setIgnoredChanges();
     }
 
     /**
      * Are database updates required.
      *
-     * @return boolean
+     * @param Table[] $fromTables
+     * @param Table[] $toTables
+     * @param array   $protectedTableNames
+     *
+     * @return bool
      */
-    public function hasPending()
+    public function hasPending($fromTables, $toTables, array $protectedTableNames)
     {
         if ($this->pending !== null) {
             return $this->pending;
         }
-        $this->compare();
+        $this->compare($fromTables, $toTables, $protectedTableNames);
 
         return $this->pending;
     }
@@ -76,21 +74,27 @@ abstract class BaseComparator
     /**
      * Run the update checks and flag if we need an update.
      *
-     * @param boolean $force
+     * @param Table[] $fromTables
+     * @param Table[] $toTables
+     * @param array   $protectedTableNames
+     * @param bool    $force
      *
      * @return SchemaCheck
      */
-    public function compare($force = false)
+    public function compare($fromTables, $toTables, array $protectedTableNames, $force = false)
     {
         if ($this->response !== null && $force === false) {
             return $this->getResponse();
         }
+        if ($force === false) {
+            $this->setIgnoredChanges();
+        }
 
-        $this->checkTables();
+        $this->checkTables($fromTables, $toTables);
 
         // If we have diffs, check if they need to be modified
         if ($this->diffs !== null) {
-            $this->adjustDiffs();
+            $this->adjustDiffs($protectedTableNames);
             $this->addAlterResponses();
         }
 
@@ -122,10 +126,12 @@ abstract class BaseComparator
             return [];
         }
 
+        $platform = $this->connection->getDatabasePlatform();
+        $flags = AbstractPlatform::CREATE_INDEXES | AbstractPlatform::CREATE_FOREIGNKEYS;
         $queries = [];
+
         foreach ($this->tablesCreate as $tableName => $table) {
-            $queries[$tableName] = $this->connection->getDatabasePlatform()
-                ->getCreateTableSQL($table, AbstractPlatform::CREATE_INDEXES | AbstractPlatform::CREATE_FOREIGNKEYS);
+            $queries[$tableName] = $platform->getCreateTableSQL($table, $flags);
         }
 
         return $queries;
@@ -143,13 +149,34 @@ abstract class BaseComparator
             return $queries;
         }
 
+        $platform = $this->connection->getDatabasePlatform();
+
         /** @var $tableDiff TableDiff */
         foreach ($this->tablesAlter as $tableName => $tableDiff) {
-            $queries[$tableName] = $this->connection->getDatabasePlatform()
-                ->getAlterTableSQL($tableDiff);
+            $queries[$tableName] = $platform->getAlterTableSQL($tableDiff);
         }
 
         return $queries;
+    }
+
+    /**
+     * Get the unmodified table diffs.
+     *
+     * @return TableDiff[]
+     */
+    public function getDiffs()
+    {
+        return $this->diffs;
+    }
+
+    /**
+     * Add an ignored change to the list.
+     *
+     * @param IgnoredChange $ignoredChange
+     */
+    public function addIgnoredChange(IgnoredChange $ignoredChange)
+    {
+        $this->ignoredChanges[] = $ignoredChange;
     }
 
     /**
@@ -168,12 +195,12 @@ abstract class BaseComparator
     /**
      * Run the checks on the tables to see if they firstly exist, then if they
      * require update.
+     *
+     * @param Table[] $fromTables
+     * @param Table[] $toTables
      */
-    protected function checkTables()
+    protected function checkTables($fromTables, $toTables)
     {
-        $fromTables = $this->manager->getInstalledTables();
-        $toTables = $this->manager->getSchemaTables();
-
         /** @var $fromTable Table */
         foreach ($toTables as $toTableAlias => $toTable) {
             $tableName = $toTable->getName();
@@ -204,24 +231,42 @@ abstract class BaseComparator
         $tableName = $fromTable->getName();
         $diff = (new Comparator())->diffTable($fromTable, $toTable);
         if ($diff !== false) {
+            $this->removeIgnoredChanges($diff);
             $this->diffs[$tableName] = $diff;
         }
     }
 
     /**
      * Platform specific adjustments to table/column diffs.
+     *
+     * @param array $protectedTableNames
      */
-    protected function adjustDiffs()
+    protected function adjustDiffs(array $protectedTableNames)
     {
         $diffUpdater = new DiffUpdater($this->ignoredChanges);
 
-        /** @var $diff TableDiff */
+        /** @var TableDiff $tableDiff */
         foreach ($this->diffs as $tableName => $tableDiff) {
+            $this->adjustContentTypeDiffs($tableDiff, $protectedTableNames);
             $this->diffs[$tableName] = $diffUpdater->adjustDiff($tableDiff);
             if ($this->diffs[$tableName] === false) {
                 unset($this->diffs[$tableName]);
                 continue;
             }
+        }
+    }
+
+    /**
+     * Clear 'removedColumns' attribute from ContentType table diffs to prevent accidental data removal.
+     *
+     * @param TableDiff $tableDiff
+     * @param array     $protectedTableNames
+     */
+    protected function adjustContentTypeDiffs(TableDiff $tableDiff, array $protectedTableNames)
+    {
+        $alias = str_replace($this->prefix, '', $tableDiff->fromTable->getName());
+        if (in_array($alias, $protectedTableNames)) {
+            $tableDiff->removedColumns = [];
         }
     }
 
@@ -233,12 +278,16 @@ abstract class BaseComparator
      */
     protected function addAlterResponses()
     {
+        $platform = $this->connection->getDatabasePlatform();
+        $response = $this->getResponse();
+        $this->setIgnoredChanges();
+
         foreach ($this->diffs as $tableName => $tableDiff) {
             $this->pending = true;
             $this->tablesAlter[$tableName] = $tableDiff;
-            $this->getResponse()->addTitle($tableName, sprintf('Table `%s` is not the correct schema:', $tableName));
-            $this->getResponse()->checkDiff($tableName, $tableDiff);
-            $this->systemLog->debug('Database update required', $this->connection->getDatabasePlatform()->getAlterTableSQL($tableDiff));
+            $response->addTitle($tableName, sprintf('Table `%s` is not the correct schema:', $tableName));
+            $response->checkDiff($tableName, $tableDiff);
+            $this->systemLog->debug('Database update required', $platform->getAlterTableSQL($tableDiff));
         }
     }
 }

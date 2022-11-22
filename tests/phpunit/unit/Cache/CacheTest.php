@@ -4,16 +4,13 @@ namespace Bolt\Tests\Cache;
 
 use Bolt\Cache;
 use Bolt\Tests\BoltUnitTest;
-use Eloquent\Pathogen\FileSystem\Factory\PlatformFileSystemPathFactory;
 
 class CacheTest extends BoltUnitTest
 {
-    /**
-     * @var \Bolt\Cache
-     */
+    /** @var \Bolt\Cache */
     protected $cache;
     /**
-     * Real path to cache workspace directory
+     * Real path to cache workspace directory.
      *
      * @var string
      */
@@ -21,11 +18,16 @@ class CacheTest extends BoltUnitTest
 
     public function setUp()
     {
-        $path = new PlatformFileSystemPathFactory();
-        $this->workspace = $path->createTemporaryPath();
+        $app = $this->getApp();
+        $this->workspace = sys_get_temp_dir() . '/' . uniqid('', true);
         mkdir($this->workspace, 0777, true);
         $this->workspace = realpath($this->workspace);
-        $this->cache = new Cache($this->workspace, $this->getApp());
+        $this->cache = new Cache(
+            $this->workspace,
+            Cache::EXTENSION,
+            0002,
+            $app['filesystem']
+        );
     }
 
     public function tearDown()
@@ -59,21 +61,24 @@ class CacheTest extends BoltUnitTest
         return [
             [
                 'bar',
-                'bar'
+                'bar',
             ],
             [
                 ['foo' => 'bar', 'baz' => 'meh'],
-                ['foo' => 'bar', 'baz' => 'meh']
+                ['foo' => 'bar', 'baz' => 'meh'],
             ],
             [
                 new FooObject(),
-                new FooObject()
-            ]
+                new FooObject(),
+            ],
         ];
     }
 
     /**
      * @dataProvider setProvider
+     *
+     * @param string $value
+     * @param mixed  $expected
      */
     public function testSet($value, $expected)
     {
@@ -91,9 +96,14 @@ class CacheTest extends BoltUnitTest
     {
         if (strtoupper(substr(PHP_OS, 0, 3) == 'WIN')) {
             throw new \InvalidArgumentException('Win can');
-        } else {
-            $newCache = new Cache('/foo/bar/baz', $this->getApp());
         }
+        $app = $this->getApp();
+        new Cache(
+            '/foo/bar/baz',
+            Cache::EXTENSION,
+            0002,
+            $app['filesystem']
+        );
     }
 
     /**
@@ -103,10 +113,15 @@ class CacheTest extends BoltUnitTest
     {
         if (strtoupper(substr(PHP_OS, 0, 3) == 'WIN')) {
             throw new \InvalidArgumentException('Win can');
-        } else {
-            $this->clean($this->workspace);
-            mkdir($this->workspace, 0400);
-            $this->cache = new Cache($this->workspace, $this->getApp());
         }
+        $this->clean($this->workspace);
+        mkdir($this->workspace, 0400);
+        $app = $this->getApp();
+        $this->cache = new Cache(
+            $this->workspace,
+            Cache::EXTENSION,
+            0002,
+            $app['filesystem']
+        );
     }
 }

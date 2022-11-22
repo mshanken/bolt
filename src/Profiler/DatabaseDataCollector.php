@@ -61,14 +61,14 @@ class DatabaseDataCollector extends DataCollector
             'SELECT TABLE_NAME AS Table',
             'SELECT COLUMN_NAME AS Field',
             'INNER JOIN information_schema',
-            'FROM information_schema'
+            'FROM information_schema',
         ];
 
         $return = [];
         foreach ($queries as $query) {
             foreach ($cruftarray as $cruft) {
                 if (strpos($query['sql'], $cruft) !== false) {
-                    continue(2);
+                    continue 2;
                 }
             }
             $return[] = $query;

@@ -2,10 +2,13 @@
 
 namespace Bolt\Storage;
 
+use ArrayObject;
 use Bolt\Events\HydrationEvent;
 use Bolt\Events\StorageEvent;
 use Bolt\Events\StorageEvents;
 use Bolt\Storage\Entity\Builder;
+use Bolt\Storage\Entity\Entity;
+use Bolt\Storage\Field\Type\FieldTypeInterface;
 use Bolt\Storage\Mapping\ClassMetadata;
 use Bolt\Storage\Query\QueryInterface;
 use Doctrine\Common\Persistence\ObjectRepository;
@@ -29,8 +32,8 @@ class Repository implements ObjectRepository
     /**
      * Initializes a new Repository.
      *
-     * @param EntityManager $em            The EntityManager to use.
-     * @param ClassMetadata $classMetadata The class descriptor.
+     * @param EntityManager $em            the EntityManager to use
+     * @param ClassMetadata $classMetadata the class descriptor
      */
     public function __construct($em, ClassMetadata $classMetadata)
     {
@@ -42,16 +45,22 @@ class Repository implements ObjectRepository
     /**
      * Creates a new empty entity and passes the supplied data to the constructor.
      *
-     * @param array $params
+     * @param array         $params
+     * @param ClassMetadata $metadata
      *
-     * @return Content
+     * @return Entity
      */
     public function create($params = [], ClassMetadata $metadata = null)
     {
-        $entity = $this->getEntityBuilder()->create($params, $metadata);
+        $params = new ArrayObject($params);
+        $builder = $this->getEntityBuilder();
+        /** @var Entity $entity */
+        $entity = $builder->getEntity();
         $preEventArgs = new HydrationEvent($params, ['entity' => $entity, 'repository' => $this]);
         $this->event()->dispatch(StorageEvents::PRE_HYDRATE, $preEventArgs);
-        $this->event()->dispatch(StorageEvents::POST_HYDRATE, $preEventArgs);
+        $builder->create($params, $entity);
+        $postEventArgs = new HydrationEvent($params, ['entity' => $entity, 'repository' => $this]);
+        $this->event()->dispatch(StorageEvents::POST_HYDRATE, $postEventArgs);
 
         return $entity;
     }
@@ -65,7 +74,7 @@ class Repository implements ObjectRepository
      */
     public function createQueryBuilder($alias = null)
     {
-        if (null === $alias) {
+        if ($alias === null) {
             $alias = $this->getAlias();
         }
 
@@ -78,6 +87,22 @@ class Repository implements ObjectRepository
         return $this->em->createQueryBuilder()
             ->select($select)
             ->from($this->getTableName(), $alias);
+    }
+
+    /**
+     * Return the number of rows used in this repository table.
+     *
+     * @return int
+     */
+    public function count()
+    {
+        $qb = $this->getLoadQuery()
+            ->select('COUNT(' . $this->getAlias() . '.id) as count')
+            ->resetQueryParts(['groupBy', 'join'])
+        ;
+        $result = $qb->execute()->fetchColumn(0);
+
+        return (int) $result;
     }
 
     /**
@@ -112,7 +137,6 @@ class Repository implements ObjectRepository
     public function findBy(array $criteria, array $orderBy = null, $limit = null, $offset = null)
     {
         $qb = $this->findWithCriteria($criteria, $orderBy, $limit, $offset);
-        $qb->select('*');
 
         $result = $qb->execute()->fetchAll();
 
@@ -126,10 +150,10 @@ class Repository implements ObjectRepository
     /**
      * Finds a single object by a set of criteria.
      *
-     * @param array $criteria The criteria.
+     * @param array $criteria the criteria
      * @param array $orderBy
      *
-     * @return object The object.
+     * @return object|false the object
      */
     public function findOneBy(array $criteria, array $orderBy = null)
     {
@@ -181,8 +205,10 @@ class Repository implements ObjectRepository
     /**
      * Method to hydrate and return a QueryBuilder query.
      *
-     * @return array Entity | false
-     **/
+     * @param QueryBuilder $query
+     *
+     * @return array Entity
+     */
     public function findWith(QueryBuilder $query)
     {
         $this->load($query);
@@ -190,25 +216,27 @@ class Repository implements ObjectRepository
         $result = $query->execute()->fetchAll();
         if ($result) {
             return $this->hydrateAll($result, $query);
-        } else {
-            return false;
         }
+
+        return [];
     }
 
     /**
      * Method to hydrate and return a single QueryBuilder result.
      *
-     * @return Entity | false
-     **/
+     * @param QueryBuilder $query
+     *
+     * @return Entity|false
+     */
     public function findOneWith(QueryBuilder $query)
     {
         $this->load($query);
         $result = $query->execute()->fetch();
         if ($result) {
             return $this->hydrate($result, $query);
-        } else {
-            return false;
         }
+
+        return false;
     }
 
     /**
@@ -254,7 +282,9 @@ class Repository implements ObjectRepository
         $metadata = $this->getClassMetadata();
         foreach ($metadata->getFieldMappings() as $field) {
             $fieldtype = $this->getFieldManager()->get($field['fieldtype'], $field);
-            $fieldtype->load($query, $metadata);
+            if ($fieldtype instanceof FieldTypeInterface) {
+                $fieldtype->load($query, $metadata);
+            }
         }
     }
 
@@ -271,7 +301,9 @@ class Repository implements ObjectRepository
 
         foreach ($metadata->getFieldMappings() as $field) {
             $fieldtype = $this->getFieldManager()->get($field['fieldtype'], $field);
-            $fieldtype->query($query, $metadata);
+            if ($fieldtype instanceof FieldTypeInterface) {
+                $fieldtype->query($query, $metadata);
+            }
         }
     }
 
@@ -289,19 +321,27 @@ class Repository implements ObjectRepository
         $metadata = $this->getClassMetadata();
 
         foreach ($metadata->getFieldMappings() as $field) {
-            if (in_array($field['fieldname'], $exclusions)) {
+            $fieldName = $field['fieldname'];
+            if (in_array($fieldName, $exclusions)) {
+                continue;
+            }
+            // Don't add field to the persistence query if it is not an entity
+            // property, and on UPDATE only
+            if (!isset($entity->$fieldName) && $entity->getId() !== null) {
                 continue;
             }
 
             $field = $this->getFieldManager()->get($field['fieldtype'], $field);
-            $field->persist($queries, $entity);
+            if ($field instanceof FieldTypeInterface) {
+                $field->persist($queries, $entity);
+            }
         }
     }
 
     /**
      * Deletes a single object.
      *
-     * @param object $entity The entity to delete.
+     * @param object $entity the entity to delete
      *
      * @return bool
      */
@@ -324,7 +364,7 @@ class Repository implements ObjectRepository
     /**
      * Saves a single object.
      *
-     * @param object $entity The entity to delete.
+     * @param object $entity the entity to save
      * @param bool   $silent Suppress events
      *
      * @return bool
@@ -362,7 +402,7 @@ class Repository implements ObjectRepository
     /**
      * Saves a new object into the database.
      *
-     * @param object $entity The entity to insert.
+     * @param object $entity the entity to insert
      *
      * @return bool
      */
@@ -388,7 +428,7 @@ class Repository implements ObjectRepository
     /**
      * Updates an object into the database.
      *
-     * @param object   $entity     The entity to update.
+     * @param object   $entity     the entity to update
      * @param string[] $exclusions Ignore updates to these fields
      *
      * @return bool
@@ -419,12 +459,13 @@ class Repository implements ObjectRepository
     {
         $entity = $this->getEntityBuilder()->getEntity();
 
+        $data = new ArrayObject($data);
         $preEventArgs = new HydrationEvent($data, ['entity' => $entity, 'repository' => $this]);
         $this->event()->dispatch(StorageEvents::PRE_HYDRATE, $preEventArgs);
 
         $this->getEntityBuilder()->createFromDatabaseValues($data, $entity);
 
-        $postEventArgs = new HydrationEvent($entity, ['data' => $data, 'repository' => $this]);
+        $postEventArgs = new HydrationEvent($entity, ['entity' => $entity, 'data' => $data, 'repository' => $this]);
         $this->event()->dispatch(StorageEvents::POST_HYDRATE, $postEventArgs);
 
         return $entity;

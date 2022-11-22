@@ -8,12 +8,25 @@ namespace Bolt\Storage;
  */
 class EntityProxy
 {
+    /** @var string */
     public $entity;
+    /** @var string */
     public $reference;
+    /** @var bool */
     protected $loaded = false;
+    /** @var object */
     protected $proxy;
+
+    /** @var EntityManager|null */
     private $em;
 
+    /**
+     * Constructor.
+     *
+     * @param string             $entity    the class name of the object to find
+     * @param string             $reference the identity of the object to find
+     * @param EntityManager|null $em
+     */
     public function __construct($entity, $reference, EntityManager $em = null)
     {
         $this->entity = $entity;
@@ -31,13 +44,24 @@ class EntityProxy
         $this->em = null;
     }
 
+    /**
+     * @param string $method
+     * @param array  $args
+     *
+     * @return mixed
+     */
     public function __call($method, $args)
     {
         $this->load();
 
-        return call_user_func_array(array($this->proxy, $method), $args);
+        return call_user_func_array([$this->proxy, $method], $args);
     }
 
+    /**
+     * @param string $attribute
+     *
+     * @return mixed
+     */
     public function __get($attribute)
     {
         $this->load();
@@ -45,10 +69,26 @@ class EntityProxy
         return $this->proxy->$attribute;
     }
 
+    /**
+     * @param string $attribute
+     * @param mixed  $value
+     *
+     * @return mixed
+     */
     public function __set($attribute, $value)
     {
         $this->load();
 
         return $this->proxy->$attribute = $value;
+    }
+
+    /**
+     * @return object
+     */
+    public function getProxy()
+    {
+        $this->load();
+
+        return $this->proxy;
     }
 }

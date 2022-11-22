@@ -1,10 +1,11 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
 
 use Bolt\Storage\EntityManager;
+use Bolt\Storage\Mapping;
 use Bolt\Storage\QuerySet;
 use Carbon\Carbon;
-use Doctrine\DBAL\Types\Type;
 
 /**
  * This is one of a suite of basic Bolt field transformers that handles
@@ -15,18 +16,17 @@ use Doctrine\DBAL\Types\Type;
 class DateTimeType extends DateType
 {
     /**
-     * @inheritdoc
+     * {@inheritdoc}
      */
     public function __construct(array $mapping = [], EntityManager $em = null)
     {
         parent::__construct($mapping, $em);
-        Type::overrideType(Type::DATETIME, 'Bolt\Storage\Mapping\Type\CarbonDateTimeType');
     }
 
     /**
      * {@inheritdoc}
      */
-    public function persist(QuerySet $queries, $entity, EntityManager $em = null)
+    public function persist(QuerySet $queries, $entity)
     {
         $key = $this->mapping['fieldname'];
         $value = $entity->get($key);
@@ -36,7 +36,7 @@ class DateTimeType extends DateType
             $entity->set($key, $value);
         }
 
-        parent::persist($queries, $entity, $em);
+        parent::persist($queries, $entity);
     }
 
     /**

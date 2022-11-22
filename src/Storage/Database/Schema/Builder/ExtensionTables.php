@@ -2,11 +2,14 @@
 
 namespace Bolt\Storage\Database\Schema\Builder;
 
+use Bolt\Storage\Database\Schema\Table\BaseTable;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\DBAL\Schema\Table;
 
 /**
  * Builder for Bolt extension tables.
+ *
+ * @internal
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
@@ -14,6 +17,9 @@ class ExtensionTables extends BaseBuilder
 {
     /** @var callable[] */
     protected $tableGenerators = [];
+
+    /** @var string @deprecated Deprecated since 3.0, to be removed in 4.0. */
+    private $prefix;
 
     /**
      * Get all the registered extension tables.
@@ -28,10 +34,18 @@ class ExtensionTables extends BaseBuilder
     public function getSchemaTables(Schema $schema)
     {
         $tables = [];
+
+        foreach ($this->tables->keys() as $name) {
+            /** @var BaseTable $table */
+            $table = $this->tables[$name];
+            $tables[$name] = $table->buildTable($schema, $name, $this->charset, $this->collate);
+        }
+
         foreach ($this->tableGenerators as $generator) {
-            $table = call_user_func($generator, $schema);
+            $table = $generator($schema);
 
             if (is_array($table)) {
+                /** @var Table[] $table */
                 foreach ($table as $t) {
                     $alias = str_replace($this->prefix, '', $t->getName());
                     $t->addOption('alias', $alias);
@@ -40,6 +54,7 @@ class ExtensionTables extends BaseBuilder
                     $tables[$alias] = $t;
                 }
             } else {
+                /** @var Table $table */
                 $alias = str_replace($this->prefix, '', $table->getName());
                 $table->addOption('alias', $alias);
                 $table->addOption('charset', $this->charset);
@@ -54,12 +69,24 @@ class ExtensionTables extends BaseBuilder
     /**
      * This method allows extensions to register their own tables.
      *
-     * @param callable $generator A generator function that takes the Schema
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     *
+     * @param callable $generator a generator function that takes the Schema
      *                            instance and returns a table or an array of
-     *                            tables.
+     *                            tables
      */
     public function addTable(callable $generator)
     {
         $this->tableGenerators[] = $generator;
+    }
+
+    /**
+     * @deprecated Deprecated since 3.0, to be removed in 4.0.
+     *
+     * @param string $prefix
+     */
+    public function addPrefix($prefix)
+    {
+        $this->prefix = $prefix;
     }
 }

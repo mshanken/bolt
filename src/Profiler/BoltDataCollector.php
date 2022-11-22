@@ -2,6 +2,7 @@
 
 namespace Bolt\Profiler;
 
+use Bolt;
 use Bolt\Translation\Translator as Trans;
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
@@ -35,22 +36,19 @@ class BoltDataCollector extends DataCollector
     public function collect(Request $request, Response $response, \Exception $exception = null)
     {
         $this->data = [
-            'version'     => $this->app['bolt_version'],
-            'name'        => $this->app['bolt_name'],
-            'fullversion' => 'Version: ' . $this->app['bolt_long_version'],
-            'payoff'      => 'Sophisticated, lightweight & simple CMS',
-            'aboutlink'   => sprintf('<a href="%s">%s</a>', $this->app['url_generator']->generate('about'), 'About'),
-            'branding'    => null,
-            'editlink'    => null,
-            'edittitle'   => null,
+            'version'       => Bolt\Version::VERSION,
+            'payoff'        => 'Sophisticated, lightweight & simple CMS',
+            'dashboardlink' => sprintf('<a href="%s">%s</a>', $this->app['url_generator']->generate('dashboard'), 'Dashboard'),
+            'branding'      => null,
+            'editlink'      => null,
+            'edittitle'     => null,
         ];
 
         if ($this->app['config']->get('general/branding/provided_by/0')) {
             $this->data['branding'] = sprintf(
-                '%s <a href="mailto:%s">%s</a>',
-                Trans::__('Provided by:'),
-                $this->app['config']->get('general/branding/provided_by/0'),
-                $this->app['config']->get('general/branding/provided_by/1')
+                '%s %s',
+                Trans::__('general.phrase.provided-by-colon'),
+                $this->app['config']->get('general/branding/provided_link')
             );
         }
 
@@ -68,26 +66,6 @@ class BoltDataCollector extends DataCollector
     public function getVersion()
     {
         return $this->data['version'];
-    }
-
-    /**
-     * Getter for fullversion.
-     *
-     * @return string
-     */
-    public function getFullVersion()
-    {
-        return $this->data['fullversion'];
-    }
-
-    /**
-     * Getter for name.
-     *
-     * @return string
-     */
-    public function getVersionName()
-    {
-        return $this->data['name'];
     }
 
     /**
@@ -111,13 +89,13 @@ class BoltDataCollector extends DataCollector
     }
 
     /**
-     * Getter for aboutlink.
+     * Getter for dashboardlink.
      *
      * @return string
      */
-    public function getAboutlink()
+    public function getDashboardlink()
     {
-        return $this->data['aboutlink'];
+        return $this->data['dashboardlink'];
     }
 
     /**
@@ -131,7 +109,7 @@ class BoltDataCollector extends DataCollector
     }
 
     /**
-     * Getter for aboutlink.
+     * Getter for edittitle.
      *
      * @return string
      */

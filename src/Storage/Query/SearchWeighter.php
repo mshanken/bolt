@@ -8,13 +8,14 @@ namespace Bolt\Storage\Query;
  */
 class SearchWeighter
 {
+    /** @var SearchConfig */
     protected $config;
-
+    /** @var QueryResultset|array */
     protected $results;
-
+    /** @var array */
     protected $searchWords;
-
-    protected $contenttype;
+    /** @var string */
+    protected $contentType;
 
     /**
      * Constructor takes a compiled SearchConfig which is essentially an array
@@ -32,7 +33,7 @@ class SearchWeighter
      * Sets an iterable group of results, this normally comes directly
      * from the database query.
      *
-     * @param QueryResultset $results
+     * @param QueryResultset|array $results
      */
     public function setResults(array $results)
     {
@@ -40,7 +41,7 @@ class SearchWeighter
     }
 
     /**
-     * Sets the contenttype that we are weighting, that is, what type the results
+     * Sets the ContentType that we are weighting, that is, what type the results
      * array is. That allows us to map against the configuration to see which fields
      * to scan for relevant text.
      *
@@ -48,7 +49,7 @@ class SearchWeighter
      */
     public function setContentType($type)
     {
-        $this->contenttype = $type;
+        $this->contentType = $type;
     }
 
     /**
@@ -78,19 +79,19 @@ class SearchWeighter
     }
 
     /**
-     * Helper method to fetch the fields for an individual contenttype.
+     * Helper method to fetch the fields for an individual ContentType.
      *
      * @return array|false
      */
     protected function getContentFields()
     {
-        return $this->config->getConfig($this->contenttype);
+        return $this->config->getConfig($this->contentType);
     }
 
     /**
      * This is a simple version of the Vector Space Model.
      *
-     * @link https://en.wikipedia.org/wiki/Vector_space_model
+     * @see https://en.wikipedia.org/wiki/Vector_space_model
      *
      * The goal is to determine a relavance score for a corpus of values
      * based on both the existence of a word or words but also based on
@@ -103,7 +104,7 @@ class SearchWeighter
      * The ratio of the appearance of the query words to the overall size of
      * the document is used to produce a better score.
      *
-     * @param Object $result A single result to score
+     * @param object $result A single result to score
      *
      * @return array An array consisting of a count / dictionary of words
      */
@@ -138,11 +139,11 @@ class SearchWeighter
                     $dictionary[$term] = ['frequency' => 0, 'postings' => []];
                 }
                 if (!isset($dictionary[$term]['postings'][$id])) {
-                    $dictionary[$term]['frequency']++;
+                    ++$dictionary[$term]['frequency'];
                     $dictionary[$term]['postings'][$id] = ['frequency' => 0];
                 }
 
-                $dictionary[$term]['postings'][$id]['frequency']++;
+                ++$dictionary[$term]['postings'][$id]['frequency'];
             }
         }
 
@@ -154,7 +155,7 @@ class SearchWeighter
      * score calculations for each word of the query, versus each word of the
      * index dictionary.
      *
-     * @param Object $result
+     * @param object $result
      *
      * @return float
      */
@@ -203,7 +204,7 @@ class SearchWeighter
                 $multiplier = $weights[$field]['weight'] / 100;
 
                 if ($multiplier > 0) {
-                    $score = $score * $multiplier;
+                    $score *= $multiplier;
                 }
             }
         }

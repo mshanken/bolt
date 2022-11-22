@@ -26,8 +26,6 @@ class TranslationFile
     private $relPath;
     /** @var array List of all translatable Strings found. */
     private $translatables = [];
-    /** @var string */
-    private $locale;
 
     /**
      * Constructor.
@@ -40,7 +38,6 @@ class TranslationFile
     {
         $this->app = $app;
         $this->domain = $domain;
-        $this->locale = $locale;
 
         // Build Path
         list($this->absPath, $this->relPath) = $this->buildPath($domain, $locale);
@@ -56,10 +53,10 @@ class TranslationFile
      */
     private function buildPath($domain, $locale)
     {
-        $path = '/resources/translations/' . $locale . '/' . $domain . '.' . $locale . '.yml';
+        $path = '/translations/' . $locale . '/' . $domain . '.' . $locale . '.yml';
 
         // If long locale dir doesn't exists try short locale and return it if that exists
-        if (strlen($locale) == 5 && !is_dir($this->app['resources']->getPath('apppath' . $path))) {
+        if (strlen($locale) == 5 && !is_dir($this->app['path_resolver']->resolve('%root%/app' . $path))) {
             $paths = $this->buildPath($domain, substr($locale, 0, 2));
 
             if (is_dir($paths[0])) {
@@ -68,13 +65,13 @@ class TranslationFile
         }
 
         return [
-            $this->app['resources']->getPath('apppath' . $path),
+            $this->app['path_resolver']->resolve('%root%/app' . $path),
             'app' . $path,
         ];
     }
 
     /**
-     * Get the path to a tranlsation resource.
+     * Get the path to a translation resource.
      *
      * @return array [absolute path, relative path]
      */
@@ -105,9 +102,9 @@ class TranslationFile
             ->ignoreVCS(true)
             ->name('*.twig')
             ->notName('*~')
-            ->exclude(['cache', 'config', 'database', 'resources', 'tests'])
-            ->in(dirname($this->app['resources']->getPath('themepath')))
-            ->in($this->app['resources']->getPath('apppath'));
+            ->exclude(['cache', 'config', 'database', 'resources', 'tests', 'bower_components', 'node_modules'])
+            ->in($this->app['path_resolver']->resolve('themes'))
+            ->in($this->app['path_resolver']->resolve('%site%/templates'));
 
         // Regex from: stackoverflow.com/questions/5695240/php-regex-to-ignore-escaped-quotes-within-quotes
         $twigRegex = [
@@ -130,9 +127,9 @@ class TranslationFile
     /**
      * Scan php files for  __('...' and __("..." and add the strings found to the list of translatable strings.
      *
-     * All translatables strings have to be called with:
-     * __("text", $params=[], $domain='messages', locale=null) // $app['translator']->trans()
-     * __("text", count, $params=[], $domain='messages', locale=null) // $app['translator']->transChoice()
+     * All translatable strings have to be called with:
+     * __("text", params=[], domain='messages', locale=null) // $app['translator']->trans()
+     * __("text", count, params=[], domain='messages', locale=null) // $app['translator']->transChoice()
      */
     private function scanPhpFiles()
     {
@@ -141,8 +138,7 @@ class TranslationFile
             ->ignoreVCS(true)
             ->name('*.php')
             ->notName('*~')
-            ->exclude(['cache', 'config', 'database', 'resources', 'tests'])
-            ->in($this->app['resources']->getPath('apppath'))
+            ->exclude(['cache', 'config', 'database', 'resources', 'tests', 'vendor'])
             ->in(__DIR__ . DIRECTORY_SEPARATOR . '..');
 
         foreach ($finder as $file) {
@@ -175,7 +171,7 @@ class TranslationFile
                 return false;
             };
 
-            for ($x = 0; $x < $numTokens; $x++) {
+            for ($x = 0; $x < $numTokens; ++$x) {
                 $token = $tokens[$x];
                 // Found function __()
                 if (is_array($token) && $token[0] == T_STRING && $token[1] == '__') {
@@ -204,8 +200,6 @@ class TranslationFile
                                 $token = $tokens[++$x];
                             }
                             $this->addTranslatable($string);
-                            //
-                            // TODO: retrieve domain?
                         }
                     }
                 }
@@ -214,55 +208,7 @@ class TranslationFile
     }
 
     /**
-     *  Add fields names and labels for contenttype (forms) to the list of translatable strings.
-     */
-    private function scanContenttypeFields()
-    {
-        foreach ($this->app['config']->get('contenttypes') as $contenttype) {
-            foreach ($contenttype['fields'] as $fkey => $field) {
-                if ($field['label'] !== '') {
-                    $this->addTranslatable($field['label']);
-                } else {
-                    $this->addTranslatable(ucfirst($fkey));
-                }
-            }
-        }
-    }
-
-    /**
-     *  Add relation names and labels to the list of translatable strings.
-     */
-    private function scanContenttypeRelations()
-    {
-        foreach ($this->app['config']->get('contenttypes') as $contenttype) {
-            if (array_key_exists('relations', $contenttype)) {
-                foreach ($contenttype['relations'] as $fkey => $field) {
-                    if (isset($field['label']) && $field['label'] !== '') {
-                        $this->addTranslatable($field['label']);
-                    } else {
-                        $this->addTranslatable(ucfirst($fkey));
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Add name ans singular names for taxonomies to the list of translatable strings.
-     */
-    private function scanTaxonomies()
-    {
-        foreach ($this->app['config']->get('taxonomy') as $value) {
-            foreach (['name', 'singular_name'] as $key) {
-                $this->addTranslatable($value[$key]);
-            }
-        }
-    }
-
-    /**
      * Find all twig templates and bolt php code, extract translatables strings, merge with existing translations.
-     *
-     * @return array
      */
     private function gatherTranslatableStrings()
     {
@@ -270,9 +216,6 @@ class TranslationFile
 
         $this->scanTwigFiles();
         $this->scanPhpFiles();
-        $this->scanContenttypeFields();
-        $this->scanContenttypeRelations();
-        $this->scanTaxonomies();
 
         ksort($this->translatables);
     }
@@ -291,17 +234,17 @@ class TranslationFile
         // Presort
         $unusedTranslations = $savedTranslations;
         $transByType = [
-            'Unused'   => [' unused messages', []],
-            'TodoReal' => [' untranslated messages', []],
-            'TodoKey'  => [' untranslated keyword based messages', []],
-            'DoneReal' => [' translations', []],
-            'DoneKey'  => [' keyword based translations', []],
+            'Unused'   => [' Unused messages', []],
+            'TodoReal' => [' Legacy untranslated messages', []],
+            'TodoKey'  => [' Untranslated messages', []],
+            'DoneReal' => [' Legacy translation messages', []],
+            'DoneKey'  => [' Translation messages', []],
         ];
         foreach ($newTranslations as $key => $translation) {
             $set = ['trans' => $translation];
-            if (preg_match('%^([a-z0-9-]+)\.([a-z0-9-]+)\.([a-z0-9-]+)(?:\.([a-z0-9.-]+))?$%', $key, $match)) {
+            if (preg_match('%^[a-z0-9-]+\.[a-z0-9-.]+$%', $key)) {
                 $type = 'Key';
-                $set['key'] = array_slice($match, 1);
+                $set['key'] = preg_split('%\.%', $key);
             } else {
                 $type = 'Real';
             }
@@ -317,50 +260,62 @@ class TranslationFile
 
         // Build List
         $indent = '    ';
-        $status = '# ' . $this->relPath . ' – generated on ' . date('Y-m-d H:i:s e') . "\n\n" .
-            '# Warning: Translations are in the process of being moved to a new keyword-based translation' . "\n" .
-            '#          at the moment. This is an ongoing process. Translations currently in the ' . "\n" .
-            '#          repository are automatically mapped to the new scheme. Be aware that there ' . "\n" .
-            '#          can be a race condition between that process and your PR so that it\'s ' . "\n" .
-            '#          eventually necessary to remap your translations. If you\'re planning on ' . "\n" .
-            '#          updating your translations, it\'s best to ask on IRC to time your contribution' . "\n" .
-            '#          in order to prevent merge conflicts.' . "\n\n";
+        $status = '# ' . $this->relPath . "\n\n" .
+            '# Warning: Translations are in the process of being moved to a new keyword' . "\n" .
+            '#          based translation messages. This is an ongoing process. Translations' . "\n" .
+            '#          currently in the repository are automatically mapped to the new' . "\n" .
+            '#          scheme. Be aware that there can be a race condition between that' . "\n" .
+            '#          process and your PR so that it will eventually be necessary to' . "\n" .
+            '#          re-map your translations.' . "\n\n";
         $content = '';
+
+        // Set this to true to get nested output.
+        $nested = false;
 
         foreach ($transByType as $type => $transData) {
             list($text, $translations) = $transData;
             // Header
-            $count = (count($translations) > 0 ? sprintf('%3s', count($translations)) : ' no');
+            $count = (count($translations) > 0 ? sprintf('%3s', count($translations)) : '  0');
             $status .= '# ' . $count . $text . "\n";
             if (count($translations) > 0) {
-                $content .= "\n" . '#--- ' . str_pad(ltrim($count) . $text . ' ', 74, '-') . "\n\n";
+                $content .= "\n" . '#--- ' . str_pad(ltrim($text) . ' ', 74, '-') . "\n\n";
             }
             // List
             $lastKey = [];
             $linebreak = ''; // We want an empty line before each 1st level key
             foreach ($translations as $key => $tdata) {
                 // Key
-                if ($type == 'DoneKey') {
-                    $differs = false;
-                    for ($level = 0, $end = count($tdata['key']) - 1; $level < $end; $level++) {
-                        if ($differs || $level >= count($lastKey) - 1 || $lastKey[$level] != $tdata['key'][$level]) {
-                            $differs = true;
-                            if ($level == 0) {
-                                $content .= $linebreak;
-                                $linebreak = "\n";
+                if ($type === 'DoneKey' || $type == 'TodoKey') {
+                    if ($nested) {
+                        $differs = false;
+                        for ($level = 0, $end = count($tdata['key']) - 1; $level < $end; ++$level) {
+                            if ($differs || $level >= count($lastKey) - 1 || $lastKey[$level] != $tdata['key'][$level]) {
+                                $differs = true;
+                                if ($level === 0) {
+                                    $content .= $linebreak;
+                                    $linebreak = "\n";
+                                }
+                                $content .= str_repeat($indent, $level) . $tdata['key'][$level] . ':' . "\n";
                             }
-                            $content .= str_repeat($indent, $level) . $tdata['key'][$level] . ':' . "\n";
                         }
+                        $lastKey = $tdata['key'];
+                        $content .= str_repeat($indent, $level) . $tdata['key'][$level] . ': ';
+                    } else {
+                        $key2 = $tdata['key'][0] . (isset($tdata['key'][1]) ? '.' . $tdata['key'][1] : '');
+                        if ($key2 !== $lastKey) {
+                            $content .= $linebreak;
+                            $linebreak = "\n";
+                            $lastKey = $key2;
+                        }
+                        $content .= $key . ': ';
                     }
-                    $lastKey = $tdata['key'];
-                    $content .= str_repeat($indent, $level) . $tdata['key'][$level] . ': ';
                 } else {
                     $content .= Escaper::escapeWithDoubleQuotes($key) . ': ';
                 }
                 // Value
                 if ($tdata['trans'] === '') {
                     $thint = Trans::__($key);
-                    if ($thint == $key) {
+                    if ($thint === $key) {
                         $thint = isset($hinting[$key]) ? $hinting[$key] : '';
                     }
                     $content .= '#' . ($thint ? ' ' . Escaper::escapeWithDoubleQuotes($thint) : '') . "\n";
@@ -376,43 +331,44 @@ class TranslationFile
     /**
      * Parses translations file and returns translations.
      *
-     * @return array Translations found
+     * @return array|null Translations found
      */
     private function readSavedTranslations()
     {
-        if (is_file($this->absPath) && is_readable($this->absPath)) {
-            try {
-                $savedTranslations = Yaml::parse(file_get_contents($this->absPath));
-
-                if ($savedTranslations === null) {
-                    return []; // File seems to be empty
-                } elseif (!is_array($savedTranslations)) {
-                    $savedTranslations = [$savedTranslations]; // account for file with one lin
-                }
-
-                $flatten = function ($data, $prefix = '') use (&$flatten, &$flattened) {
-                    if ($prefix) {
-                        $prefix .= '.';
-                    }
-                    foreach ($data as $key => $value) {
-                        if (is_array($value)) {
-                            $flatten($value, $prefix . $key);
-                        } else {
-                            $flattened[$prefix . $key] = ($value === null) ? '' : $value;
-                        }
-                    }
-                };
-                $flattened = [];
-                $flatten($savedTranslations);
-
-                return $flattened;
-            } catch (ParseException $e) {
-                $this->app['logger.flash']->error('<strong>Unable to parse the YAML translations</strong><br>' . $e->getMessage());
-                // Todo: do something better than just returning an empty array
-            }
+        if (!is_file($this->absPath) || !is_readable($this->absPath)) {
+            return null;
         }
 
-        return [];
+        try {
+            $savedTranslations = Yaml::parse(file_get_contents($this->absPath), true);
+        } catch (ParseException $e) {
+            $this->app['logger.flash']->danger('Unable to parse the YAML translations' . $e->getMessage());
+
+            return null;
+        }
+
+        if ($savedTranslations === null) {
+            return []; // File seems to be empty
+        } elseif (!is_array($savedTranslations)) {
+            $savedTranslations = [$savedTranslations]; // account for file with one lin
+        }
+
+        $flatten = function ($data, $prefix = '') use (&$flatten, &$flattened) {
+            if ($prefix) {
+                $prefix .= '.';
+            }
+            foreach ($data as $key => $value) {
+                if (is_array($value)) {
+                    $flatten($value, $prefix . $key);
+                } else {
+                    $flattened[$prefix . $key] = ($value === null) ? '' : $value;
+                }
+            }
+        };
+        $flattened = [];
+        $flatten($savedTranslations);
+
+        return $flattened;
     }
 
     /**
@@ -431,7 +387,7 @@ class TranslationFile
             list($path) = $this->buildPath('infos', reset($localeFallbacks));
 
             if (!file_exists($path)) {
-                $this->app['logger.flash']->error('Locale infos yml file not found. Fallback also not found.');
+                $this->app['logger.flash']->danger('Locale infos yml file not found. Fallback also not found.');
 
                 // fallback failed
                 return null;
@@ -451,6 +407,11 @@ class TranslationFile
     private function contentMessages()
     {
         $savedTranslations = $this->readSavedTranslations();
+        // An exception occurred when reading the file
+        if ($savedTranslations === null) {
+            return '';
+        }
+
         $this->gatherTranslatableStrings();
 
         // Find already translated strings
@@ -469,40 +430,18 @@ class TranslationFile
     }
 
     /**
-     * Gets all translatable strings and returns a translationsfile for messages or contenttypes.
-     *
-     * @return string
-     */
-    private function contentContenttypes()
-    {
-        $savedTranslations = $this->readSavedTranslations();
-        $this->gatherTranslatableStrings();
-
-        $keygen = new ContenttypesKeygen($this->app, $this->translatables, $savedTranslations);
-        $keygen->generate();
-
-        $newTranslations = $keygen->translations();
-        $hinting = $keygen->hints();
-        ksort($newTranslations);
-
-        return $this->buildNewContent($newTranslations, $savedTranslations, $hinting);
-    }
-
-    /**
-     * Gets all translatable strings and returns a translationsfile for messages or contenttypes.
+     * Gets all translatable strings and returns a translations file for
+     * messages.
      *
      * @return string
      */
     public function content()
     {
-        switch ($this->domain) {
-            case 'infos':
-                return $this->contentInfo();
-            case 'messages':
-                return $this->contentMessages();
-            default:
-                return $this->contentContenttypes();
+        if ($this->domain === 'infos') {
+            return $this->contentInfo();
         }
+
+        return $this->contentMessages();
     }
 
     /**
@@ -525,14 +464,14 @@ class TranslationFile
         // Have a file, but not writable
         } elseif (file_exists($this->absPath) && !is_writable($this->absPath)) {
             $msg = Trans::__(
-                "The file '%s' is not writable. You will have to use your own editor to make modifications to this file.",
+                'general.phrase.file-not-writable',
                 $msgRepl
             );
             $this->app['logger.flash']->warning($msg);
 
         // File is not readable: abort
         } elseif (file_exists($this->absPath) && !is_readable($this->absPath)) {
-            $msg = Trans::__("The translations file '%s' is not readable.", $msgRepl);
+            $msg = Trans::__('general.phrase.error-translation-file-not-readable', $msgRepl);
             $this->app->abort(Response::HTTP_NOT_FOUND, $msg);
 
         // File is writeable

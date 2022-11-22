@@ -23,9 +23,9 @@ class Manager
     /**
      * Constructor.
      *
-     * @param Application          $app
-     * @param Repository\LogChange $changeRepository
-     * @param Repository\LogSystem $systemRepository
+     * @param Application                    $app
+     * @param Repository\LogChangeRepository $changeRepository
+     * @param Repository\LogSystemRepository $systemRepository
      */
     public function __construct(Application $app, Repository\LogChangeRepository $changeRepository, Repository\LogSystemRepository $systemRepository)
     {
@@ -76,10 +76,10 @@ class Manager
     /**
      * Get a specific activity log.
      *
-     * @param string  $log     The log to query.  Either 'change' or 'system'
-     * @param integer $page
-     * @param integer $amount  Number of results to return
-     * @param array   $options
+     * @param string $log     The log to query.  Either 'change' or 'system'
+     * @param int    $page
+     * @param int    $amount  Number of results to return
+     * @param array  $options
      *
      * @throws \UnexpectedValueException
      *
@@ -99,20 +99,19 @@ class Manager
             $rows = $repo->getActivity($page, $amount, $options);
             $rowcount = $repo->getActivityCount($options);
         } catch (TableNotFoundException $e) {
-            return;
+            return null;
         }
 
         // Set up the pager
-        $pager = [
-            'for'          => 'activity',
-            'count'        => $rowcount,
-            'totalpages'   => ceil($rowcount / $amount),
-            'current'      => $page,
-            'showing_from' => ($page - 1) * $amount + 1,
-            'showing_to'   => ($page - 1) * $amount + count($rows),
-        ];
 
-        $this->app['storage']->setPager('activity', $pager);
+        /** @var \Bolt\Pager\PagerManager $manager */
+        $manager = $this->app['pager'];
+        $manager->createPager('activity')
+            ->setCount($rowcount)
+            ->setTotalpages(ceil($rowcount / $amount))
+            ->setCurrent($page)
+            ->setShowingFrom(($page - 1) * $amount + 1)
+            ->setShowingTo(($page - 1) * $amount + count($rows));
 
         return $rows;
     }
@@ -120,31 +119,31 @@ class Manager
     /**
      * Get the listing data such as title and count.
      *
-     * @param array   $contenttype  The ContentType
-     * @param integer $contentid    The content ID
-     * @param array   $queryOptions
+     * @param array $contenttype  The ContentType
+     * @param int   $contentId    The content ID
+     * @param array $queryOptions
      *
      * @return array
      */
-    public function getListingData(array $contenttype, $contentid, array $queryOptions)
+    public function getListingData(array $contenttype, $contentId, array $queryOptions)
     {
-        // We have a content type, and possibly a contentid.
+        // We have a content type, and possibly a content ID.
         $content = null;
 
-        if ($contentid) {
-            $content = $this->app['storage']->getContent($contenttype['slug'], ['id' => $contentid, 'hydrate' => false]);
-            $queryOptions['contentid'] = $contentid;
+        if ($contentId) {
+            $content = $this->app['storage']->getContent($contenttype['slug'], ['id' => $contentId, 'hydrate' => false]);
+            $queryOptions['contentid'] = $contentId;
         }
 
         // Getting a slice of data and the total count
-        $logEntries = $this->changeRepository->getChangelogByContentType($contenttype['slug'], $queryOptions);
-        $itemcount = $this->changeRepository->countChangelogByContentType($contenttype['slug'], $queryOptions);
+        $logEntries = $this->changeRepository->getChangeLogByContentType($contenttype['slug'], $queryOptions);
+        $itemCount = $this->changeRepository->countChangeLogByContentType($contenttype['slug'], $queryOptions);
 
         // The page title we're sending to the template depends on a few things:
         // If no contentid is given, we'll use the plural form of the content
         // type; otherwise, we'll derive it from the changelog or content item
         // itself.
-        if ($contentid) {
+        if ($contentId) {
             if ($content) {
                 // content item is available: get the current title
                 $title = $content->getTitle();
@@ -153,7 +152,7 @@ class Manager
                 if (empty($logEntries)) {
                     // No item, no entries - phew. Content type name and ID
                     // will have to do.
-                    $title = $contenttype['singular_name'] . ' #' . $contentid;
+                    $title = $contenttype['singular_name'] . ' #' . $contentId;
                 } else {
                     // No item, but we can use the most recent title.
                     $title = $logEntries[0]['title'];
@@ -165,6 +164,6 @@ class Manager
             $title = $contenttype['name'];
         }
 
-        return ['content' => $content, 'title' => $title, 'entries' => $logEntries, 'count' => $itemcount];
+        return ['content' => $content, 'title' => $title, 'entries' => $logEntries, 'count' => $itemCount];
     }
 }

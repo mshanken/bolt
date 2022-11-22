@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\Events;
 
 use Silex\Application;
@@ -7,6 +8,8 @@ use Symfony\Component\EventDispatcher\Event;
 
 /**
  * Event class for system compulsory cron jobs.
+ *
+ * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
 class CronEvent extends Event
 {
@@ -28,11 +31,11 @@ class CronEvent extends Event
         $this->output = $output;
 
         // Add listeners
-        $this->app['dispatcher']->addListener(CronEvents::CRON_HOURLY, [$this, 'doRunScheduledJobs']);
-        $this->app['dispatcher']->addListener(CronEvents::CRON_DAILY, [$this, 'doRunScheduledJobs']);
-        $this->app['dispatcher']->addListener(CronEvents::CRON_WEEKLY, [$this, 'doRunScheduledJobs']);
+        $this->app['dispatcher']->addListener(CronEvents::CRON_HOURLY,  [$this, 'doRunScheduledJobs']);
+        $this->app['dispatcher']->addListener(CronEvents::CRON_DAILY,   [$this, 'doRunScheduledJobs']);
+        $this->app['dispatcher']->addListener(CronEvents::CRON_WEEKLY,  [$this, 'doRunScheduledJobs']);
         $this->app['dispatcher']->addListener(CronEvents::CRON_MONTHLY, [$this, 'doRunScheduledJobs']);
-        $this->app['dispatcher']->addListener(CronEvents::CRON_YEARLY, [$this, 'doRunScheduledJobs']);
+        $this->app['dispatcher']->addListener(CronEvents::CRON_YEARLY,  [$this, 'doRunScheduledJobs']);
     }
 
     /**
@@ -67,6 +70,15 @@ class CronEvent extends Event
      */
     private function cronHourly()
     {
+        $timedRecords = $this->app['storage.event_processor.timed'];
+        if ($timedRecords->isDuePublish()) {
+            $this->notify('Publishing timed records');
+            $timedRecords->publishTimedRecords();
+        }
+        if ($timedRecords->isDueHold()) {
+            $this->notify('De-publishing timed records');
+            $timedRecords->holdExpiredRecords();
+        }
     }
 
     /**
@@ -83,7 +95,7 @@ class CronEvent extends Event
     private function cronWeekly()
     {
         // Clear the cache
-        $this->app['cache']->clearCache();
+        $this->app['cache']->flushAll();
         $this->notify('Clearing cache');
 
         // Trim system log files

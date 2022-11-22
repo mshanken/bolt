@@ -1,7 +1,8 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
 
-use Bolt\Storage\EntityManager;
+use Bolt\Common\Json;
 use Bolt\Storage\QuerySet;
 use Doctrine\DBAL\Types\Type;
 
@@ -16,13 +17,13 @@ class ListTypeBase extends FieldTypeBase
     /**
      * {@inheritdoc}
      */
-    public function persist(QuerySet $queries, $entity, EntityManager $em = null)
+    public function persist(QuerySet $queries, $entity)
     {
         $key = $this->mapping['fieldname'];
         $value = $entity->get($key);
 
-        if ($value !== null) {
-            $value = $this->isJson($value) ? json_decode($value, true) : $value;
+        if ($value !== null && !empty($value)) {
+            $value = Json::test($value) ? Json::parse($value) : $value;
 
             // Remove elements that are not important for storage.
             foreach ($value as &$v) {
@@ -34,7 +35,7 @@ class ListTypeBase extends FieldTypeBase
         }
         $entity->set($key, $value);
 
-        parent::persist($queries, $entity, $em);
+        parent::persist($queries, $entity);
     }
 
     /**
@@ -42,6 +43,6 @@ class ListTypeBase extends FieldTypeBase
      */
     public function getStorageType()
     {
-        return Type::getType('json_array');
+        return Type::getType('json');
     }
 }

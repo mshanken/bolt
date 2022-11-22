@@ -2,35 +2,40 @@
 
 namespace Bolt\Provider;
 
-use Silex\Application;
+use Bolt\Form;
+use Bolt\Validator\Constraints\ExistingEntityValidator;
+use Pimple\Container;
+use Pimple\ServiceProviderInterface;
 use Silex\Provider\FormServiceProvider as SilexFormServiceProvider;
-use Silex\ServiceProviderInterface;
-use Symfony\Component\Security\Csrf\CsrfTokenManager;
-use Symfony\Component\Security\Csrf\TokenStorage\SessionTokenStorage;
 
 /**
- * Register form services
+ * Register form services.
  *
  * @author Carson Full <carsonfull@gmail.com>
  */
 class FormServiceProvider implements ServiceProviderInterface
 {
-    public function register(Application $app)
+    public function register(Container $app)
     {
         if (!isset($app['form.factory'])) {
             $app->register(new SilexFormServiceProvider());
         }
 
-        $app['form.csrf_provider'] = $app->share(
-            function ($app) {
-                $storage = new SessionTokenStorage($app['sessions']['csrf']);
+        $app['form.extensions'] = $app->extend(
+            'form.extensions',
+            function ($extensions, $app) {
+                $extensions[] = new Form\BoltExtension($app);
 
-                return new CsrfTokenManager(null, $storage);
+                return $extensions;
             }
         );
-    }
 
-    public function boot(Application $app)
-    {
+        $app['form.validator.existing_entity'] = function ($app) {
+            return new ExistingEntityValidator($app['storage']);
+        };
+
+        $app['validator.validator_service_ids'] += [
+            ExistingEntityValidator::class => 'form.validator.existing_entity',
+        ];
     }
 }

@@ -22,7 +22,7 @@ class SearchQueryTest extends BoltUnitTest
         $query->setContentType('pages');
         $query->setSearch($filter);
         $expr = $query->getWhereExpression();
-        $this->assertEquals('((pages.title LIKE :title_1) OR (pages.title LIKE :title_2)) OR ((pages.teaser LIKE :teaser_1) OR (pages.teaser LIKE :teaser_2)) OR ((pages.body LIKE :body_1) OR (pages.body LIKE :body_2)) OR ((pages.chapters LIKE :chapters_1) OR (pages.chapters LIKE :chapters_2))', $expr);
+        $this->assertEquals('((_pages.title LIKE :title_1) OR (_pages.title LIKE :title_2)) OR ((_pages.teaser LIKE :teaser_1) OR (_pages.teaser LIKE :teaser_2)) OR ((_pages.body LIKE :body_1) OR (_pages.body LIKE :body_2)) OR ((_pages.groups LIKE :groups_1) OR (_pages.groups LIKE :groups_2))', $expr);
         $params = $query->getWhereParameters();
         $this->assertArrayHasKey('title_1', $params);
         $this->assertArrayHasKey('title_2', $params);
@@ -30,8 +30,8 @@ class SearchQueryTest extends BoltUnitTest
         $this->assertArrayHasKey('teaser_2', $params);
         $this->assertArrayHasKey('body_1', $params);
         $this->assertArrayHasKey('body_2', $params);
-        $this->assertArrayHasKey('chapters_1', $params);
-        $this->assertArrayHasKey('chapters_2', $params);
+        $this->assertArrayHasKey('groups_1', $params);
+        $this->assertArrayHasKey('groups_2', $params);
         $this->assertEquals('%lorem%', $params['title_1']);
         $this->assertEquals('%ipsum%', $params['title_2']);
     }
@@ -44,7 +44,7 @@ class SearchQueryTest extends BoltUnitTest
         $query->setContentType('pages');
         $query->setSearch($filter);
         $expr = $query->getWhereExpression();
-        $this->assertEquals('((pages.title LIKE :title_1) AND (pages.title LIKE :title_2)) OR ((pages.teaser LIKE :teaser_1) AND (pages.teaser LIKE :teaser_2)) OR ((pages.body LIKE :body_1) AND (pages.body LIKE :body_2)) OR ((pages.chapters LIKE :chapters_1) AND (pages.chapters LIKE :chapters_2))', $expr);
+        $this->assertEquals('((_pages.title LIKE :title_1) AND (_pages.title LIKE :title_2)) OR ((_pages.teaser LIKE :teaser_1) AND (_pages.teaser LIKE :teaser_2)) OR ((_pages.body LIKE :body_1) AND (_pages.body LIKE :body_2)) OR ((_pages.groups LIKE :groups_1) AND (_pages.groups LIKE :groups_2))', $expr);
         $params = $query->getWhereParameters();
         $this->assertArrayHasKey('title_1', $params);
         $this->assertArrayHasKey('title_2', $params);
@@ -52,35 +52,39 @@ class SearchQueryTest extends BoltUnitTest
         $this->assertArrayHasKey('teaser_2', $params);
         $this->assertArrayHasKey('body_1', $params);
         $this->assertArrayHasKey('body_2', $params);
-        $this->assertArrayHasKey('chapters_1', $params);
-        $this->assertArrayHasKey('chapters_2', $params);
+        $this->assertArrayHasKey('groups_1', $params);
+        $this->assertArrayHasKey('groups_2', $params);
         $this->assertEquals('%lorem%', $params['title_1']);
         $this->assertEquals('%ipsum%', $params['title_2']);
         $this->assertEquals('%lorem%', $params['teaser_1']);
         $this->assertEquals('%ipsum%', $params['teaser_2']);
         $this->assertEquals('%lorem%', $params['body_1']);
         $this->assertEquals('%ipsum%', $params['body_2']);
-        $this->assertEquals('%lorem%', $params['chapters_1']);
-        $this->assertEquals('%ipsum%', $params['chapters_2']);
+        $this->assertEquals('%lorem%', $params['groups_1']);
+        $this->assertEquals('%ipsum%', $params['groups_2']);
     }
 
+    /**
+     * @expectedException \Bolt\Exception\QueryParseException
+     */
     public function testContenttypeFailure()
     {
         $app = $this->getApp();
         $filter = 'main other';
         $query = $app['query.search'];
-        $query->setContentType('showcases');
-        $this->setExpectedException('Bolt\Exception\QueryParseException');
+        $query->setContentType('blocks');
         $query->setSearch($filter);
     }
 
+    /**
+     * @expectedException \Bolt\Exception\QueryParseException
+     */
     public function testMissingContenttypeFailure()
     {
         $app = $this->getApp();
         $filter = 'main other';
         $query = $app['query.search'];
         $query->setContentType('nonexistent');
-        $this->setExpectedException('Bolt\Exception\QueryParseException');
         $query->setSearch($filter);
     }
 }

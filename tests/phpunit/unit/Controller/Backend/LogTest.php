@@ -1,6 +1,9 @@
 <?php
+
 namespace Bolt\Tests\Controller\Backend;
 
+use Bolt\Logger\Manager;
+use Bolt\Storage\Entity;
 use Bolt\Tests\Controller\ControllerUnitTest;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -14,6 +17,7 @@ class LogTest extends ControllerUnitTest
 {
     public function setUp()
     {
+        $this->resetConfig();
         $this->resetDb();
         $this->addSomeContent();
 
@@ -26,10 +30,7 @@ class LogTest extends ControllerUnitTest
     {
         $this->allowLogin($this->getApp());
 
-        $changeRepository = $this->getService('storage')->getRepository('Bolt\Storage\Entity\LogChange');
-        $systemRepository = $this->getService('storage')->getRepository('Bolt\Storage\Entity\LogSystem');
-        $log = $this->getMock('Bolt\Logger\Manager', ['clear', 'trim'], [$this->getApp(), $changeRepository, $systemRepository]);
-
+        $log = $this->getMockLoggerManager();
         $log->expects($this->once())
             ->method('clear')
             ->will($this->returnValue(true));
@@ -49,7 +50,8 @@ class LogTest extends ControllerUnitTest
         $this->assertEquals('/bolt/changelog', $response->getTargetUrl());
 
         $this->setRequest(Request::create('/bolt/changelog'));
-        $this->checkTwigForTemplate($this->getApp(), 'activity/changelog.twig');
+        $response = $this->controller()->changeOverview($this->getRequest());
+        $this->assertEquals('@bolt/activity/changelog.twig', $response->getTemplate());
     }
 
     public function testChangeRecord()
@@ -65,13 +67,19 @@ class LogTest extends ControllerUnitTest
         // Test valid entry
         $this->setRequest(Request::create('/bolt/changelog/pages/1/1'));
         $response = $this->controller()->changeRecord($this->getRequest(), 'pages', 1, 1);
-        //                               changeRecord($request, $contenttype, $contentid, $id)
 
         $context = $response->getContext();
-        $this->assertInstanceOf('Bolt\Storage\Entity\LogChange', $context['context']['entry']);
+        $this->assertInstanceOf(Entity\LogChange::class, $context['context']['entry']);
+    }
+
+    /**
+     * @expectedException \Symfony\Component\HttpKernel\Exception\HttpException
+     */
+    public function testChangeRecordNonExisting()
+    {
+        $this->getService('config')->set('general/changelog/enabled', true);
 
         // Test non-existing entry
-        $this->setExpectedException('Symfony\Component\HttpKernel\Exception\HttpException', 'exist');
         $this->setRequest(Request::create('/bolt/changelog/pages/1/100'));
         $response = $this->controller()->changeRecord($this->getRequest(), 'pages', 1, 100);
         $response->getContext();
@@ -87,7 +95,7 @@ class LogTest extends ControllerUnitTest
 
         $context = $response->getContext();
 
-        $this->assertFalse($context['context']['entries']);
+        $this->assertEmpty($context['context']['entries']);
         $this->assertNull($context['context']['content']);
         $this->assertEquals('Pages', $context['context']['title']);
         $this->assertEquals('pages', $context['context']['contenttype']['slug']);
@@ -111,7 +119,7 @@ class LogTest extends ControllerUnitTest
         $response = $this->controller()->changeRecordListing($this->getRequest(), null, null);
 
         $context = $response->getContext();
-        $this->assertEquals('All content types', $context['context']['title']);
+        $this->assertEquals('All ContentTypes', $context['context']['title']);
         $this->assertEquals(1, count($context['context']['entries']));
         $this->assertEquals(1, $context['context']['pagecount']);
 
@@ -160,9 +168,13 @@ class LogTest extends ControllerUnitTest
     {
         $this->allowLogin($this->getApp());
 
-        $changeRepository = $this->getService('storage')->getRepository('Bolt\Storage\Entity\LogChange');
-        $systemRepository = $this->getService('storage')->getRepository('Bolt\Storage\Entity\LogSystem');
-        $log = $this->getMock('Bolt\Logger\Manager', ['clear', 'trim'], [$this->getApp(), $changeRepository, $systemRepository]);
+        $changeRepository = $this->getService('storage')->getRepository(Entity\LogChange::class);
+        $systemRepository = $this->getService('storage')->getRepository(Entity\LogSystem::class);
+        $log = $this->getMockBuilder(Manager::class)
+            ->setMethods(['clear', 'trim'])
+            ->setConstructorArgs([$this->getApp(), $changeRepository, $systemRepository])
+            ->getMock()
+        ;
         $log->expects($this->once())
             ->method('clear')
             ->will($this->returnValue(true));
@@ -182,7 +194,8 @@ class LogTest extends ControllerUnitTest
         $this->assertEquals('/bolt/systemlog', $response->getTargetUrl());
 
         $this->setRequest(Request::create('/bolt/systemlog'));
-        $this->checkTwigForTemplate($this->getApp(), 'activity/systemlog.twig');
+        $response = $this->controller()->systemOverview($this->getRequest());
+        $this->assertEquals('@bolt/activity/systemlog.twig', $response->getTemplate());
     }
 
     /**

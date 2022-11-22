@@ -1,4 +1,5 @@
 <?php
+
 namespace Bolt\EventListener;
 
 use Bolt\AccessControl\AccessChecker;
@@ -35,8 +36,12 @@ class RedirectListener implements EventSubscriberInterface
      * @param \Bolt\Users                                                $users
      * @param \Bolt\AccessControl\AccessChecker                          $authentication
      */
-    public function __construct(Session $session, UrlGeneratorInterface $urlGenerator, Users $users, AccessChecker $authentication)
-    {
+    public function __construct(
+        Session $session,
+        UrlGeneratorInterface $urlGenerator,
+        Users $users,
+        AccessChecker $authentication
+    ) {
         $this->session = $session;
         $this->urlGenerator = $urlGenerator;
         $this->users = $users;
@@ -73,7 +78,7 @@ class RedirectListener implements EventSubscriberInterface
     protected function handleNoBackendAccess(RedirectResponse $response)
     {
         $authCookie = $this->session->get('authentication');
-        if (!$this->authentication->isValidSession((string) $authCookie)) {
+        if ($authCookie === null || !$this->authentication->isValidSession($authCookie)) {
             return;
         }
 

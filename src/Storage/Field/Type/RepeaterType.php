@@ -1,11 +1,16 @@
 <?php
+
 namespace Bolt\Storage\Field\Type;
 
+use Bolt\Common\Json;
 use Bolt\Exception\FieldConfigurationException;
+use Bolt\Storage\Entity;
 use Bolt\Storage\Field\Collection\RepeatingFieldCollection;
 use Bolt\Storage\Mapping\ClassMetadata;
 use Bolt\Storage\QuerySet;
+use Bolt\Storage\Repository\FieldValueRepository;
 use Doctrine\DBAL\Query\QueryBuilder;
+use Doctrine\DBAL\Types\Type;
 
 /**
  * This is one of a suite of basic Bolt field transformers that handles
@@ -21,11 +26,14 @@ class RepeaterType extends FieldTypeBase
      *
      * @param QueryBuilder  $query
      * @param ClassMetadata $metadata
+     *
+     * @return QueryBuilder|null
      */
     public function load(QueryBuilder $query, ClassMetadata $metadata)
     {
         $field = $this->mapping['fieldname'];
         $boltname = $metadata->getBoltName();
+        $table = $this->mapping['tables']['field_value'];
 
         $from = $query->getQueryPart('from');
 
@@ -35,41 +43,96 @@ class RepeaterType extends FieldTypeBase
             $alias = $from[0]['table'];
         }
 
-        $query->addSelect($this->getPlatformGroupConcat('fields', $query))
-            ->leftJoin(
-                $alias,
-                $this->mapping['tables']['field_value'],
-                'f',
-                "f.content_id = $alias.id AND f.contenttype='$boltname' AND f.name='$field'"
-            );
+        $subQuery = '(SELECT ' . $this->getPlatformGroupConcat($query) . " FROM $table f WHERE f.content_id = $alias.id AND f.contenttype='$boltname' AND f.name = '$field') as $field";
+        $query->addSelect($subQuery);
+
+        return null;
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public function persist(QuerySet $queries, $entity)
     {
         $this->normalize($entity);
         $key = $this->mapping['fieldname'];
         $accessor = 'get' . ucfirst($key);
+        $proposed = $entity->$accessor();
 
-        $collection = $entity->$accessor();
+        $collection = new RepeatingFieldCollection($this->em, $this->mapping);
+        $existingFields = $this->getExistingFields($entity) ?: [];
+        foreach ($existingFields as $group => $ids) {
+            $collection->addFromReferences($ids, $group);
+        }
 
-        $this->addToInsertQuery($queries, $collection->getNew(), $entity);
-        $this->addToUpdateQuery($queries, $collection->getExisting(), $entity);
+        $toDelete = $collection->update($proposed);
+        $repo = $this->em->getRepository(Entity\FieldValue::class);
+
+        $queries->onResult(
+            function ($query, $result, $id) use ($repo, $collection, $toDelete) {
+                foreach ($collection as $entity) {
+                    $entity->content_id = $id;
+                    $repo->save($entity, true);
+                }
+
+                foreach ($toDelete as $entity) {
+                    $repo->delete($entity);
+                }
+            }
+        );
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public function hydrate($data, $entity)
     {
+        /** @var string $key */
         $key = $this->mapping['fieldname'];
-        $vals = array_filter(explode(',', $data['fields']));
+        $collection = new RepeatingFieldCollection($this->em, $this->mapping);
+        $collection->setName($key);
+
+        // If there isn't anything set yet then we just return an empty collection
+        if (!isset($data[$key])) {
+            $this->set($entity, $collection);
+
+            return;
+        }
+
+        // This block separately handles JSON content for Templatefields
+        if (isset($data[$key]) && Json::test($data[$key])) {
+            $originalMapping[$key]['fields'] = $this->mapping['fields'];
+            $originalMapping[$key]['type'] = 'repeater';
+            $mapping = $this->em->getMapper()->getRepeaterMapping($originalMapping);
+
+            $decoded = Json::parse($data[$key]);
+            $collection = new RepeatingFieldCollection($this->em, $mapping);
+            $collection->setName($key);
+
+            if (isset($decoded) && count($decoded)) {
+                foreach ($decoded as $group => $repdata) {
+                    $collection->addFromArray($repdata, $group);
+                }
+            }
+
+            $this->set($entity, $collection);
+
+            return;
+        }
+
+        // Final block handles values stored in the DB and creates a lazy collection
+        $vals = array_filter(explode(',', $data[$key]));
         $values = [];
         foreach ($vals as $fieldKey) {
             $split = explode('_', $fieldKey);
-            $values[$split[0]][$split[1]][] = $split[2];
+            $id = array_pop($split);
+            $group = array_pop($split);
+            $field = implode('_', $split);
+            $values[$field][$group][] = $id;
         }
 
-        $collection = new RepeatingFieldCollection($this->em);
-        $collection->setName($key);
-
-        if (count($values[$key])) {
+        if (isset($values[$key]) && count($values[$key])) {
+            ksort($values[$key]);
             foreach ($values[$key] as $group => $refs) {
                 $collection->addFromReferences($refs, $group);
             }
@@ -79,10 +142,26 @@ class RepeaterType extends FieldTypeBase
     }
 
     /**
+     * The set method gets called directly by a new entity builder. For this field we never want to allow
+     * null values, rather we want an empty collection so this overrides the default and handles that.
+     *
+     * @param object $entity
+     * @param mixed  $val
+     */
+    public function set($entity, $val)
+    {
+        if ($val === null) {
+            $val = new RepeatingFieldCollection($this->em, $this->mapping);
+        }
+
+        return parent::set($entity, $val);
+    }
+
+    /**
      * Normalize step ensures that we have correctly hydrated objects at the collection
      * and entity level.
      *
-     * @param $entity
+     * @param object $entity
      */
     public function normalize($entity)
     {
@@ -90,15 +169,14 @@ class RepeaterType extends FieldTypeBase
         $accessor = 'get' . ucfirst($key);
 
         $outerCollection = $entity->$accessor();
-        $newVal = [];
         if (!$outerCollection instanceof RepeatingFieldCollection) {
-            $collection = new RepeatingFieldCollection($this->em);
+            $collection = new RepeatingFieldCollection($this->em, $this->mapping);
             $collection->setName($key);
 
             if (is_array($outerCollection)) {
                 foreach ($outerCollection as $group => $fields) {
                     if (is_array($fields)) {
-                        $collection->addFromArray($fields, $group);
+                        $collection->addFromArray($fields, $group, $entity);
                     }
                 }
             }
@@ -117,61 +195,41 @@ class RepeaterType extends FieldTypeBase
     }
 
     /**
-     * Get platform specific group_concat token for provided column
+     * Get platform specific group_concat token for provided column.
      *
-     * @param string       $alias
      * @param QueryBuilder $query
      *
      * @return string
      */
-    protected function getPlatformGroupConcat($alias, QueryBuilder $query)
+    protected function getPlatformGroupConcat(QueryBuilder $query)
     {
         $platform = $query->getConnection()->getDatabasePlatform()->getName();
 
         switch ($platform) {
             case 'mysql':
-                return "GROUP_CONCAT(DISTINCT CONCAT_WS('_', f.name, f.grouping, f.id)) as $alias";
+                return "GROUP_CONCAT(DISTINCT CONCAT_WS('_', f.name, f.grouping, f.id))";
             case 'sqlite':
-                return "GROUP_CONCAT(DISTINCT f.name||'_'||f.grouping||'_'||f.id) as $alias";
+                return "GROUP_CONCAT(DISTINCT f.name||'_'||f.grouping||'_'||f.id)";
             case 'postgresql':
-                return "string_agg(DISTINCT f.name||'_'||f.grouping||'_'||f.id) as $alias";
+                return "string_agg(concat_ws('_', f.name,f.grouping,f.id), ',' ORDER BY f.grouping)";
         }
+
+        throw new \RuntimeException(sprintf('Configured database platform "%s" is not supported.', $platform));
     }
 
     /**
      * Get existing fields for this record.
      *
-     * @param mixed $entity
+     * @param object $entity
      *
      * @return array
      */
     protected function getExistingFields($entity)
     {
-        $query = $this->em->createQueryBuilder()
-            ->select('grouping, id', 'name')
-            ->from($this->mapping['tables']['field_value'])
-            ->where('content_id = :id')
-            ->andWhere('contenttype = :contenttype')
-            ->andWhere('name = :name')
-            ->setParameters([
-                'id'          => $entity->id,
-                'contenttype' => $entity->getContenttype(),
-                'name'        => $this->mapping['fieldname'],
-            ]);
+        /** @var FieldValueRepository $repo */
+        $repo = $this->em->getRepository(Entity\FieldValue::class);
 
-        $results = $query->execute()->fetchAll();
-
-        $fields = [];
-
-        if (!$results) {
-            return $fields;
-        }
-
-        foreach ($results as $result) {
-            $fields[$result['grouping']][$result['name']] = $result['id'];
-        }
-
-        return $fields;
+        return $repo->getExistingFields($entity->getId(), $entity->getContenttype(), $this->mapping['fieldname']);
     }
 
     /**
@@ -179,7 +237,7 @@ class RepeaterType extends FieldTypeBase
      *
      * @param QuerySet $queries
      * @param array    $changes
-     * @param $entity
+     * @param object   $entity
      */
     protected function addToInsertQuery(QuerySet $queries, $changes, $entity)
     {
@@ -199,7 +257,7 @@ class RepeaterType extends FieldTypeBase
                 function ($query, $result, $id) use ($repo, $fieldValue) {
                     if ($result === 1 && $id) {
                         $fieldValue->setContent_id($id);
-                        $repo->save($fieldValue);
+                        $repo->save($fieldValue, true);
                     }
                 }
             );
@@ -221,9 +279,8 @@ class RepeaterType extends FieldTypeBase
      *
      * @param QuerySet $queries
      * @param array    $changes
-     * @param $entity
      */
-    protected function addToUpdateQuery(QuerySet $queries, $changes, $entity)
+    protected function addToUpdateQuery(QuerySet $queries, $changes)
     {
         foreach ($changes as $fieldValue) {
             $repo = $this->em->getRepository(get_class($fieldValue));
@@ -237,7 +294,7 @@ class RepeaterType extends FieldTypeBase
             $queries->onResult(
                 function ($query, $result, $id) use ($repo, $fieldValue) {
                     if ($result === 1) {
-                        $repo->save($fieldValue);
+                        $repo->save($fieldValue, true);
                     }
                 }
             );
@@ -245,11 +302,11 @@ class RepeaterType extends FieldTypeBase
     }
 
     /**
-     * @param $field
+     * @param string $field
      *
      * @throws FieldConfigurationException
      *
-     * @return mixed
+     * @return FieldTypeBase
      */
     protected function getFieldType($field)
     {
@@ -277,5 +334,13 @@ class RepeaterType extends FieldTypeBase
         $mapping = $this->mapping['data']['fields'][$field];
 
         return $mapping['type'];
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getStorageType()
+    {
+        return Type::getType('json');
     }
 }

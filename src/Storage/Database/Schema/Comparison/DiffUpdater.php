@@ -4,13 +4,14 @@ namespace Bolt\Storage\Database\Schema\Comparison;
 
 use Doctrine\DBAL\Schema\Column;
 use Doctrine\DBAL\Schema\ColumnDiff;
-use Doctrine\DBAL\Schema\Comparator;
 use Doctrine\DBAL\Schema\ForeignKeyConstraint;
 use Doctrine\DBAL\Schema\Index;
 use Doctrine\DBAL\Schema\TableDiff;
 
 /**
  * Processor for \Doctrine\DBAL\Schema\TableDiff objects.
+ *
+ * @internal
  *
  * @author Gawain Lynch <gawain.lynch@gmail.com>
  */
@@ -82,7 +83,7 @@ class DiffUpdater
         foreach ($schemaUpdateType as $columnName => $changeObject) {
             // Function name we need to call
             $func = $this->paramMap[$alterName];
-            $needsUnset = call_user_func_array([$this, $func], [$changeObject, $ignoredChange]);
+            $needsUnset = call_user_func([$this, $func], $changeObject, $ignoredChange);
             if ($needsUnset) {
                 unset($tableDiff->{$alterName}[$columnName]);
             }
@@ -95,7 +96,7 @@ class DiffUpdater
      * @param Column        $column
      * @param IgnoredChange $ignoredChange
      *
-     * @return boolean
+     * @return bool
      */
     protected function checkColumn(Column $column, IgnoredChange $ignoredChange)
     {
@@ -113,7 +114,7 @@ class DiffUpdater
      * @param ColumnDiff    $columnDiff
      * @param IgnoredChange $ignoredChange
      *
-     * @return boolean
+     * @return bool
      */
     protected function checkColumnDiff(ColumnDiff $columnDiff, IgnoredChange $ignoredChange)
     {
@@ -137,7 +138,7 @@ class DiffUpdater
      * @param Index         $index
      * @param IgnoredChange $ignoredChange
      *
-     * @return boolean
+     * @return bool
      */
     protected function checkIndex(Index $index, IgnoredChange $ignoredChange)
     {
@@ -155,7 +156,7 @@ class DiffUpdater
      * @param ForeignKeyConstraint $foreignKeyConstraint
      * @param IgnoredChange        $ignoredChange
      *
-     * @return boolean
+     * @return bool
      */
     protected function checkForeignKeyConstraint(ForeignKeyConstraint $foreignKeyConstraint, IgnoredChange $ignoredChange)
     {

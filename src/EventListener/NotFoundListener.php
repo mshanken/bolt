@@ -1,18 +1,23 @@
 <?php
+
 namespace Bolt\EventListener;
 
 use Bolt\Controller\Zone;
-use Bolt\Legacy\Content;
-use Bolt\Legacy\Storage;
-use Bolt\Render;
+use Bolt\Storage\Entity\Content;
+use Bolt\Storage\Query\Query;
 use Bolt\TemplateChooser;
+use RuntimeException;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\GetResponseForExceptionEvent;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
+use Twig\Environment;
+use Twig\Error\LoaderError;
+use Twig\Error\RuntimeError;
 
 /**
- * Renders the not found page in the event of an HTTP exception
+ * Renders the not found page in the event of an HTTP exception.
  *
  * @author Carson Full <carsonfull@gmail.com>
  */
@@ -20,60 +25,99 @@ class NotFoundListener implements EventSubscriberInterface
 {
     /** @var string */
     protected $notFoundPage;
-    /** @var Storage */
-    protected $storage;
+    /** @var Query */
+    protected $query;
     /** @var TemplateChooser */
     protected $templateChooser;
-    /** @var Render */
-    protected $render;
+    /** @var Environment */
+    private $twig;
 
     /**
-     * NotFoundListener constructor.
+     * Constructor.
      *
      * @param string          $notFoundPage
-     * @param Storage         $storage
+     * @param Query           $query
      * @param TemplateChooser $templateChooser
-     * @param Render          $render
+     * @param Environment     $twig
      */
-    public function __construct($notFoundPage, Storage $storage, TemplateChooser $templateChooser, Render $render)
+    public function __construct($notFoundPage, Query $query, TemplateChooser $templateChooser, Environment $twig)
     {
         $this->notFoundPage = $notFoundPage;
-        $this->storage = $storage;
+        $this->query = $query;
         $this->templateChooser = $templateChooser;
-        $this->render = $render;
+        $this->twig = $twig;
     }
 
     /**
-     * Render the not found page if on frontend and http exception
+     * Render the not found page if on frontend and http exception.
      *
      * @param GetResponseForExceptionEvent $event
      */
     public function onKernelException(GetResponseForExceptionEvent $event)
     {
-        if (!$event->getException() instanceof HttpExceptionInterface || Zone::isBackend($event->getRequest())) {
+        $request = $event->getRequest();
+        $exception = $event->getException();
+        if (!$exception instanceof HttpExceptionInterface || Zone::isBackend($request)) {
+            return;
+        }
+        if ($exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
+            return;
+        }
+        // If no zone is set, assume front-end as SELECT queries can leak unpublished records
+        if (Zone::get($request) === null) {
+            Zone::set($request, Zone::FRONTEND);
+        }
+
+        try {
+            $this->renderNotFound($event, $this->notFoundPage);
+
+            return;
+        } catch (LoaderError $e) {
+            // Template not found, fall though to see if we can render a
+            // record, failing that let the exception handler take over
+        }
+
+        $content = $this->query->getContent($this->notFoundPage, ['returnsingle' => true]);
+        if (!$content instanceof Content) {
             return;
         }
 
-        if (substr($this->notFoundPage, -5) === '.twig') {
-            $response = $this->render->render($this->notFoundPage);
-        } else {
-            $content = $this->storage->getContent($this->notFoundPage, ['returnsingle' => true]);
-
-            if (!$content instanceof Content || empty($content->id)) {
-                return;
-            }
-
-            $template = $this->templateChooser->record($content);
-            $response = $this->render->render($template, $content->getTemplateContext());
-        }
-
-        $event->setResponse($response);
+        $template = $this->templateChooser->record($content);
+        $contentTypeName = (string) $content->getContenttype();
+        $context = [
+            'record'         => $content,
+            $contentTypeName => $content,
+        ];
+        $this->renderNotFound($event, $template, $context);
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public static function getSubscribedEvents()
     {
         return [
-            KernelEvents::EXCEPTION => ['onKernelException', 512],
+            // After loggers at -4, but before default at -8
+            KernelEvents::EXCEPTION => ['onKernelException', -6],
         ];
+    }
+
+    /**
+     * Render a not found template.
+     *
+     * @param GetResponseForExceptionEvent $event
+     * @param string|string[]              $template
+     * @param array                        $context
+     *
+     * @throws RuntimeException
+     */
+    private function renderNotFound(GetResponseForExceptionEvent $event, $template, array $context = [])
+    {
+        try {
+            $html = $this->twig->resolveTemplate($template)->render($context);
+            $event->setResponse(new Response($html, Response::HTTP_NOT_FOUND));
+        } catch (RuntimeError $e) {
+            throw new RuntimeException('Unable to render 404 page!', null, $e);
+        }
     }
 }

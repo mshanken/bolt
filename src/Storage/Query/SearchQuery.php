@@ -3,6 +3,7 @@
 namespace Bolt\Storage\Query;
 
 use Bolt\Exception\QueryParseException;
+use Doctrine\DBAL\Query\Expression\CompositeExpression;
 use Doctrine\DBAL\Query\QueryBuilder;
 
 /**
@@ -10,7 +11,7 @@ use Doctrine\DBAL\Query\QueryBuilder;
  * filtering system used in the SelectQuery class. The main difference is
  * the addition of weighting, which is driven by documented here:.
  *
- *  @link https://docs.bolt.cm/content-search
+ *  @see https://docs.bolt.cm/templates/content-search
  *
  *  The resulting QueryBuilder object is then passed through to the individual
  *  field handlers where they can perform value transformations.
@@ -19,10 +20,17 @@ use Doctrine\DBAL\Query\QueryBuilder;
  */
 class SearchQuery extends SelectQuery
 {
+    /** @var string */
     protected $search;
+    /** @var SearchConfig */
+    protected $config;
 
     /**
-     * @param QueryBuilder $qb
+     * Constructor.
+     *
+     * @param QueryBuilder         $qb
+     * @param QueryParameterParser $parser
+     * @param SearchConfig         $config
      */
     public function __construct(QueryBuilder $qb, QueryParameterParser $parser, SearchConfig $config)
     {
@@ -47,13 +55,13 @@ class SearchQuery extends SelectQuery
      *
      * @param array $params
      */
-    public function setParameters($params)
+    public function setParameters(array $params)
     {
         $this->params = $params;
     }
 
     /**
-     * Gets the individual elements of the search query as an array
+     * Gets the individual elements of the search query as an array.
      *
      * @return array
      */
@@ -74,11 +82,10 @@ class SearchQuery extends SelectQuery
             $words = preg_split('/[\s\+]+/', $this->search);
 
             return '%' . implode('% && %', $words) . '%';
-        } else {
-            $words = explode(' ', $this->search);
-
-            return '%' . implode('% || %', $words) . '%';
         }
+        $words = explode(' ', $this->search);
+
+        return '%' . implode('% || %', $words) . '%';
     }
 
     /**
@@ -88,16 +95,21 @@ class SearchQuery extends SelectQuery
      */
     protected function processFilters()
     {
-        if (!$this->contenttype) {
-            throw new QueryParseException('You have attempted to run a search query without specifying a contenttype', 1);
-        }
-
-        if (!$config = $this->config->getConfig($this->contenttype)) {
-            throw new QueryParseException('You have attempted to run a search query on an unknown contenttype or one that is not searchable', 1);
-        }
-
         $params = $this->params;
-        unset($params['filter']);
+
+        if (!$this->contentType) {
+            throw new QueryParseException('You have attempted to run a search query without specifying a ContentType', 1);
+        }
+
+        if (isset($params['invisible']) && $params['invisible'] === true) {
+            $this->config->enableSearchInvisible(true);
+        }
+
+        if (!$config = $this->config->getConfig($this->contentType)) {
+            throw new QueryParseException('You have attempted to run a search query on an unknown ContentType or one that is not searchable', 1);
+        }
+
+        unset($params['filter'], $params['invisible']);
 
         foreach ($config as $field => $options) {
             $params[$field] = $this->getSearchParameter();
@@ -117,10 +129,11 @@ class SearchQuery extends SelectQuery
     public function getWhereExpression()
     {
         if (!count($this->filters)) {
-            return;
+            return null;
         }
 
         $expr = $this->qb->expr()->orX();
+        /** @var Filter $filter */
         foreach ($this->filters as $filter) {
             $expr = $expr->add($filter->getExpression());
         }

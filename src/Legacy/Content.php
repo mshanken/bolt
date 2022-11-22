@@ -2,13 +2,19 @@
 
 namespace Bolt\Legacy;
 
-use Bolt\Helpers\Html;
+use Bolt\Common\Json;
 use Bolt\Storage\Entity;
-use Maid\Maid;
 use Silex;
+use Twig\Markup;
 
+/**
+ * Legacy Content class.
+ *
+ * @deprecated Deprecated since 3.0, to be removed in 4.0.
+ */
 class Content implements \ArrayAccess
 {
+    use Entity\ContentTypeTrait;
     use Entity\ContentRelationTrait;
     use Entity\ContentRouteTrait;
     use Entity\ContentSearchTrait;
@@ -27,12 +33,6 @@ class Content implements \ArrayAccess
 
     /** @var \Silex\Application */
     protected $app;
-
-    /** @var integer The last time we weight a searchresult */
-    private $lastWeight = 0;
-
-    /** @var boolean Whether this is a "real" contenttype or an embedded ones */
-    private $isRootType;
 
     /**
      * @param \Silex\Application $app
@@ -144,40 +144,25 @@ class Content implements \ArrayAccess
         $value = null;
 
         if (isset($this->values[$name])) {
-            $fieldtype = $this->fieldtype($name);
-            $fieldinfo = $this->fieldinfo($name);
+            $fieldtype = $this->fieldType($name);
+            $fieldinfo = $this->fieldInfo($name);
             $allowtwig = !empty($fieldinfo['allowtwig']);
 
             switch ($fieldtype) {
                 case 'markdown':
-                    $value = $this->preParse($this->values[$name], $allowtwig);
+                    // Deprecated: This should be moved to a render function in
+                    // Bolt\Storage\Field\Type\MarkdownType eventually.
+                    $value = $this->app['markdown']->text($this->values[$name]);
+                    $value = $this->preParse($value, $allowtwig);
+                    $value = new Markup($value, 'UTF-8');
 
-                    // Parse the field as Markdown, return HTML
-                    $value = $this->app['markdown']->text($value);
-
-                    $config = $this->app['config']->get('general/htmlcleaner');
-                    $allowed_tags = !empty($config['allowed_tags']) ? $config['allowed_tags'] :
-                        ['div', 'p', 'br', 'hr', 's', 'u', 'strong', 'em', 'i', 'b', 'li', 'ul', 'ol', 'blockquote', 'pre', 'code', 'tt', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'dd', 'dl', 'dt', 'table', 'tbody', 'thead', 'tfoot', 'th', 'td', 'tr', 'a', 'img'];
-                    $allowed_attributes = !empty($config['allowed_attributes']) ? $config['allowed_attributes'] :
-                        ['id', 'class', 'name', 'value', 'href', 'src'];
-
-                    // Sanitize/clean the HTML.
-                    $maid = new Maid(
-                        [
-                            'output-format'   => 'html',
-                            'allowed-tags'    => $allowed_tags,
-                            'allowed-attribs' => $allowed_attributes,
-                        ]
-                    );
-                    $value = $maid->clean($value);
-                    $value = new \Twig_Markup($value, 'UTF-8');
                     break;
 
                 case 'html':
                 case 'text':
                 case 'textarea':
                     $value = $this->preParse($this->values[$name], $allowtwig);
-                    $value = new \Twig_Markup($value, 'UTF-8');
+                    $value = new Markup($value, 'UTF-8');
 
                     break;
 
@@ -185,7 +170,7 @@ class Content implements \ArrayAccess
                 case 'filelist':
                     if (is_string($this->values[$name])) {
                         // Parse the field as JSON, return the array
-                        $value = json_decode($this->values[$name]);
+                        $value = Json::parse($this->values[$name]);
                     } else {
                         // Already an array, do nothing.
                         $value = $this->values[$name];
@@ -210,6 +195,18 @@ class Content implements \ArrayAccess
     }
 
     /**
+     * @internal Forward comparability for to forward legacy calls to getDecodedValue()
+     *
+     * @param string $fieldName
+     *
+     * @return mixed
+     */
+    public function getRenderedValue($fieldName)
+    {
+        return $this->getDecodedValue($fieldName);
+    }
+
+    /**
      * If passed snippet contains Twig tags, parse the string as Twig, and return the results.
      *
      * @param string  $snippet
@@ -220,20 +217,21 @@ class Content implements \ArrayAccess
     public function preParse($snippet, $allowtwig)
     {
         // Quickly verify that we actually need to parse the snippet!
-        if ($allowtwig && preg_match('/[{][{%#]/', $snippet)) {
-            $snippet = html_entity_decode($snippet, ENT_QUOTES, 'UTF-8');
-
-            try {
-                return $this->app['safe_render']->render($snippet, $this->getTemplateContext());
-            } catch (\Exception $e) {
-                $message = 'Rendering a record Twig snippet failed.';
-                $this->app['logger.system']->critical($message, ['event' => 'exception', 'exception' => $e]);
-
-                return $message;
-            }
+        if (!$allowtwig || !preg_match('/[{][{%#]/', $snippet)) {
+            return $snippet;
         }
 
-        return $snippet;
+        // Don't parse Twig for live editor.
+        $request = $this->app['request_stack']->getCurrentRequest();
+        if ($request && $request->request->getBoolean('_live-editor-preview')) {
+            return $snippet;
+        }
+
+        $snippet = html_entity_decode($snippet, ENT_QUOTES, 'UTF-8');
+
+        $template = $this->app['twig']->createTemplate((string) $snippet);
+
+        return twig_include($this->app['twig'], $this->getTemplateContext(), $template, [], true, false, true);
     }
 
     public function getTemplateContext()
@@ -280,9 +278,10 @@ class Content implements \ArrayAccess
 
         $operator = $asc ? '<' : '>';
         $order = $asc ? ' DESC' : ' ASC';
+        $value = isset($this->values[$field]) ? $this->values[$field] : null;
 
         $params = [
-            $field         => $operator . $this->values[$field],
+            $field         => $operator . $value,
             'limit'        => 1,
             'order'        => $field . $order,
             'returnsingle' => true,
@@ -311,9 +310,10 @@ class Content implements \ArrayAccess
 
         $operator = $asc ? '>' : '<';
         $order = $asc ? ' ASC' : ' DESC';
+        $value = isset($this->values[$field]) ? $this->values[$field] : null;
 
         $params = [
-            $field         => $operator . $this->values[$field],
+            $field         => $operator . $value,
             'limit'        => 1,
             'order'        => $field . $order,
             'returnsingle' => true,
@@ -324,37 +324,6 @@ class Content implements \ArrayAccess
         $next = $this->app['storage']->getContent($this->contenttype['singular_slug'], $params, $pager, $where);
 
         return $next;
-    }
-
-    /**
-     * Get field information for the given field.
-     *
-     * @param string $key
-     *
-     * @return array An associative array containing at least the key 'type',
-     *               and, depending on the type, other keys.
-     */
-    public function fieldinfo($key)
-    {
-        if (isset($this->contenttype['fields'][$key])) {
-            return $this->contenttype['fields'][$key];
-        } else {
-            return ['type' => ''];
-        }
-    }
-
-    /**
-     * Get the fieldtype for a given fieldname.
-     *
-     * @param string $key
-     *
-     * @return string
-     */
-    public function fieldtype($key)
-    {
-        $field = $this->fieldinfo($key);
-
-        return $field['type'];
     }
 
     /**
